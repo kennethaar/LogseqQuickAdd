@@ -22,7 +22,7 @@ Pressing Shift + Ctrl + L will open the window and add you clipboardcontents or 
 
 The Trigger is `Shift + Ctrl + L`. To change the letter just pick you own letter after `+^`
 
-Change the path after the InboxFilePath to send the input to your inbox.md file
+Change the path after the `InboxFilePath` to send the input to your inbox.md file
 
 ### Default text
 
