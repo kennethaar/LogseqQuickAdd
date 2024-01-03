@@ -1,52 +1,74 @@
 ;------------------------------------------------------------------------------
 ;SETTINGS
 ;------------------------------------------------------------------------------
-FileEncoding, UTF-8
-#NoEnv  ; Recommended for performance and compatibility with future AutoHotkey releases.
-; #Warn  ; Enable warnings to assist with detecting common errors.
-SendMode Input  ; Recommended for new scripts due to its superior speed and reliability.
-SetWorkingDir %A_ScriptDir%  ; Ensures a consistent starting directory.
+#Requires AutoHotkey v2.0+
 #SingleInstance force
+;--
+;Icon Tip
+;--
+
+A_IconTip := "LOGSEQ QUICKADD`nPress SHIFT+CTRL+L to add`nyour clipboard as task to Logseq"
 
 ;------------------------------------------------------------------------------
 ; Add ICON to your tray. REMEMBER to put an ICO file in same folder as the script.
 
-Menu, Tray, Icon, Icon-Logseq.ico
-
-;------------------------------------------------------------------------------
-; AutoHotKey syntax
 ;------------------------------------------------------------------------------
 
-; Alt = !
-; Ctrl = ^
-; Shift = +
-; WinActivate = #
-; Space {Space}
-; Enter {Enter}
-; Tab {Tab}
-; Ignore everything after this character ;
-; Escape one of the above characters `
-;------------------------------------------------------------------------------
-; Set you trigger. Default is Shift + Ctrl + L
-;------------------------------------------------------------------------------
-
-+^l::
+TraySetIcon("Icon-Logseq.ico")
 
 ;------------------------------------------------------------------------------
-;~ Change the path below to reflect the path to your inbox file
-;------------------------------------------------------------------------------
-
-InboxFilePath = C:\Users\yourusername\Google Drive\Inbox.md
+; Define hotkey trigger
 
 ;------------------------------------------------------------------------------
-;~ Script
-;~
-;~ This will trigger a userinput window. Add the contents of your clipboard as 
-;~ default text, and add the todo state and date tag so it show up in you daily
-;~ journal page.
+
+; Trigger (Shift + Ctrl + L)
++^l:: ;LOGSEQ QuickAdd
+
 ;------------------------------------------------------------------------------
+; Path to Logseq inbox
+; Change the path below to reflect the path the file you want to add to
+;------------------------------------------------------------------------------
+{
+; Use the line below if you want to add to your current journals page
+InboxFilePath := "C:\Users\kennetha\OneDrive - CAB Group AB\Documents\Logseq\LG2375JTB\Jarvis\journals\" A_YYYY "_" A_MM "_" A_DD ".md"
 
-InputBox, UserInput, Logseq Inbox, Add task to Logseq Inbox, , 400, 150,,,,, % clipboard
-FileAppend, - TODO %UserInput% [[%A_YYYY%-%A_MM%-%A_DD%]] `n, %InboxFilePath%, 
+; Use the line below if you want to add to your inbox.md page
+; InboxFilePath := "C:\Users\kennetha\Documents\Jarvis\pages\Inbox.md"
 
+
+;------------------------------------------------------------------------------
+; Launch inputbox
+;------------------------------------------------------------------------------
+IB := InputBox("Add a task to your journal`n`nWill be added to the bottom of your daily Journal page.", "Logseq QuickAdd", "w400 h150", A_Clipboard)
+; If you canceled show what you entered in a msgbox
+if IB.Result = "Cancel"
+    TrayTip "You entered '" IB.Value "' but then cancelled." ,"LOGSEQ QUICKADD", 1
+; If you clicked OK, send what you entered to variable and continue with the rest of the script.
+else
+   UserInput := IB.Value
+
+;------------------------------------------------------------------------------
+; Append input from inputbox to Logseq inbox file
+; Predended with "- TODO" and appended with todays date
+;------------------------------------------------------------------------------
+; The line below adds date to the end of your block
+; Try FileAppend("`n- TODO " UserInput " [[" A_YYYY "-" A_MM "-" A_DD "]] `n", InboxFilePath)
+; The line below just adds your clipboard to your bloc
+Try FileAppend("`n- TODO " UserInput " `n", InboxFilePath)
+Catch
+TrayTip
+(
+"Tried to add your input to Logseq but couldn't. Either could not find file or no input"
+) ,"LOGSEQ QUICKADD", 1
+
+Sleep 1000
+
+;~ Switches to Logseq.
+Try WinActivate "ahk_exe Logseq.exe"
+Catch
+TrayTip
+(
+"Logseq is not started"
+) ,"LOGSEQ QUICKADD", 1
 Return
+}
