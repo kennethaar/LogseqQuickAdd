@@ -22,18 +22,18 @@ TraySetIcon("Icon-Logseq.ico")
 ;------------------------------------------------------------------------------
 
 ; Trigger (Shift + Ctrl + L)
-+^l:: ;LOGSEQ QuickAdd
++^l:: ;LOGSEQ QuickAdd To change the letter just pick you own letter after `+^`
 
 ;------------------------------------------------------------------------------
 ; Path to Logseq inbox
-; Change the path below to reflect the path the file you want to add to
+; CHANGE THE PATH BELOW to reflect the path the file you want to add to
 ;------------------------------------------------------------------------------
 {
-; Use the line below if you want to add to your current journals page
-InboxFilePath := "C:\Users\kennetha\OneDrive - CAB Group AB\Documents\Logseq\LG2375JTB\Jarvis\journals\" A_YYYY "_" A_MM "_" A_DD ".md"
+; Use the line below(remove the semicolon) if you want to add to your currrent journals page. WILL NOT WORK UNLESS your journals page uses YYYY_MM_DD for example: 2024_01_01 format as date.
+;InboxFilePath := "C:\Users\YOURUSERNAME\Documents\Logseq\Graphname\journals\" A_YYYY "_" A_MM "_" A_DD ".md"
 
 ; Use the line below if you want to add to your inbox.md page
-; InboxFilePath := "C:\Users\kennetha\Documents\Jarvis\pages\Inbox.md"
+; InboxFilePath := "C:\Users\YOURUSERNAME\Documents\Logseq\Graphname\pages\Inbox.md"
 
 
 ;------------------------------------------------------------------------------
