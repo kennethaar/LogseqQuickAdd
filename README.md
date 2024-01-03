@@ -1,5 +1,5 @@
 # CaptureToLogseq
-AutoHotScript to capture to Logseq
+AutoHotKey script to capture to Logseq
 
 ![image](https://user-images.githubusercontent.com/5931199/156349067-cffd6fc9-b6c6-4af2-82fb-9dbff13bed6a.png)
 
