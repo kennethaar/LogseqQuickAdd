@@ -1,7 +1,7 @@
 # CaptureToLogseq
 AutoHotKey script to capture to Logseq
 
-![image](https://github.com/kennethaar/CaptureToLogseq/assets/5931199/5e9b1646-1665-437a-8862-35bc58ed805a)
+![image](https://github.com/kennethaar/CaptureToLogseq/assets/5931199/9deeff67-728f-460f-b883-389c5beaf3bb)
 
 ## Requirements:
 - Windows
