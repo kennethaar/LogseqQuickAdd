@@ -22,7 +22,7 @@
 ;------------------------------------------------------------------------------
 ;Icon Tip
 ;------------------------------------------------------------------------------
-A_IconTip := "LOGSEQ QUICKADD INI`nPress SHIFT+CTRL+L to add`nyour clipboard as task to Logseq"
+A_IconTip := "LOGSEQ QUICKADD`nPress SHIFT+CTRL+L to add`nyour clipboard as task to Logseq"
 
 ;------------------------------------------------------------------------------
 ; Add ICON to your tray. REMEMBER to put an ICO file in same folder as the script.
