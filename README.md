@@ -1,5 +1,7 @@
 # CaptureToLogseq
-AutoHotKey script to capture to Logseq
+AutoHotKey script to capture to Logseq.
+
+Your clipboard is added as default text. After OK it adds TODO. Then it tries to switch to Logseq.
 
 ![image](https://github.com/kennethaar/CaptureToLogseq/assets/5931199/9deeff67-728f-460f-b883-389c5beaf3bb)
 
