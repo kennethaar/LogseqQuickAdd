@@ -1,6 +1,13 @@
 # CaptureToLogseq
 AutoHotKey script to capture to Logseq.
 
+A way to easily capture your clipboard or anything you would like to Logseq.
+
+Features:
+- Adds to you daily journal With CTRL+ALT+L
+- Asks for location of your Journals folder on first run.
+- Switches to Logseq after capturing
+
 Your clipboard is added as default text. After OK it adds TODO. Then it tries to switch to Logseq.
 
 ![image](https://github.com/kennethaar/CaptureToLogseq/assets/5931199/9deeff67-728f-460f-b883-389c5beaf3bb)
