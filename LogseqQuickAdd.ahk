@@ -1,4 +1,4 @@
-;------------------------------------------------------------------------------
+﻿;------------------------------------------------------------------------------
 ;                           LogseqQuickadd
 ;
 ; A way to easily capture your clipboard or anything you would like to Logseq.
@@ -6,9 +6,12 @@
 ;
 ;                       Created by Kenneth Aar
 ;                       Modified with GUI interface
+;                       Enhanced with dynamic context scanning
+;                       Improved two-column layout
+;                       Fixed context mapping bug
 ;
 ;------------------------------------------------------------------------------
-;SETTINGS
+;SETTINGSa
 ;------------------------------------------------------------------------------
 #Requires AutoHotkey v2.0+
 #SingleInstance force
@@ -17,16 +20,131 @@
 ; Global Variables - Must be declared first
 ;------------------------------------------------------------------------------
 global VarScriptName := "LogseqQuickAdd"
-global VarVersionNo := "v012"
+global VarVersionNo := "v015"
 global Varblurb := "`nPress SHIFT+CTRL+L to add`nyour clipboard as task to Logseq"
 global customDir := ""
+global contextNamespace := ""
+global contextList := []  ; Array to store found contexts
 global taskGui := ""
 global taskInputHwnd := 0  ; Store the hwnd of the task input control
+global contextCheckboxes := []  ; Array to store checkbox controls
+global contextDisplayOrder := []  ; Array to store contexts in the order they appear in GUI
 global iniPath := A_ScriptDir "\" VarScriptName ".ini"
 
 ;------------------------------------------------------------------------------
 ; Helper Functions - Define before using them
 ;------------------------------------------------------------------------------
+
+; Function to scan the pages folder for contexts in the namespace
+ScanContextsInNamespace() {
+    global customDir, contextNamespace, contextList
+
+    contextList := []  ; Clear existing list
+
+    if (customDir = "" || contextNamespace = "") {
+        return false
+    }
+
+    ; Determine the pages folder path (should be sibling to journals folder)
+    ; If customDir is "C:\MyGraph\journals", pages should be "C:\MyGraph\pages"
+    parentDir := ""
+    SplitPath customDir, , &parentDir
+    pagesDir := parentDir "\pages"
+
+    if (!DirExist(pagesDir)) {
+        MsgBox "Cannot find pages folder at: " pagesDir "`n`nMake sure your journal folder path is correct.", "Error - " VarScriptName
+        return false
+    }
+
+    ; Build the search pattern for namespace files
+    ; Logseq uses triple underscores for namespace separators in filenames
+    ; e.g., "c/PC" becomes "c___PC.md" and "c/PC/Discord" becomes "c___PC___Discord.md"
+    searchPattern := pagesDir "\" contextNamespace "___*.md"
+
+    ; Find all matching files
+    Loop Files, searchPattern
+    {
+        ; Extract the context name from filename
+        ; e.g., "c___PC___Discord.md" -> "PC/Discord"
+        fileName := A_LoopFileName
+
+        ; Remove the .md extension first
+        contextName := StrReplace(fileName, ".md", "")
+
+        ; Remove the namespace prefix (e.g., "c___")
+        ; Since we want to remove only the first occurrence, we'll use a simple approach
+        prefixToRemove := contextNamespace "___"
+        if (SubStr(contextName, 1, StrLen(prefixToRemove)) = prefixToRemove) {
+            contextName := SubStr(contextName, StrLen(prefixToRemove) + 1)
+        }
+
+        ; Replace all remaining triple underscores with forward slashes for nested contexts
+        contextName := StrReplace(contextName, "___", "/")
+
+        ; Decode URL encoding if present (Logseq may encode special characters)
+        contextName := UrlDecode(contextName)
+
+        ; Add to list
+        contextList.Push(contextName)
+    }
+
+    ; Sort contexts alphabetically
+    if (contextList.Length > 0) {
+        contextList := SortArray(contextList)
+    }
+
+    return contextList.Length > 0
+}
+
+; Helper function to sort array (handles nested contexts with string comparison)
+SortArray(arr) {
+    if (arr.Length <= 1)
+        return arr
+
+    ; Simple bubble sort for small arrays with proper string comparison
+    Loop arr.Length - 1 {
+        i := A_Index
+        Loop arr.Length - i {
+            j := A_Index + i
+            ; Use StrCompare for case-insensitive comparison
+            ; StrCompare returns: -1 if str1 < str2, 0 if equal, 1 if str1 > str2
+            if (StrCompare(arr[i], arr[j], false) > 0) {  ; false = case-insensitive
+                temp := arr[i]
+                arr[i] := arr[j]
+                arr[j] := temp
+            }
+        }
+    }
+    return arr
+}
+
+; Helper function to decode URL encoding
+UrlDecode(str) {
+    ; Replace common URL encodings
+    str := StrReplace(str, "%20", " ")
+    str := StrReplace(str, "%2F", "/")
+    str := StrReplace(str, "%5C", "\")
+    ; Add more replacements as needed
+    return str
+}
+
+; Helper function to organize contexts into groups
+; Returns an object with: {topLevel: [], nested: []}
+OrganizeContexts(contextList) {
+    result := {topLevel: [], nested: []}
+
+    for contextName in contextList {
+        if (InStr(contextName, "/")) {
+            ; This is a nested context like "Consume/Read"
+            result.nested.Push(contextName)
+        } else {
+            ; This is a top-level context
+            result.topLevel.Push(contextName)
+        }
+    }
+
+    return result
+}
 
 ; Function to process multiline text for Logseq
 ProcessMultilineText(taskText, statusPrefix, contextSuffix) {
@@ -68,7 +186,7 @@ ProcessMultilineText(taskText, statusPrefix, contextSuffix) {
 
 ; Function to save task to Logseq journal
 SaveTask(openLogseq := false) {
-    global taskGui, customDir, iniPath, VarScriptName, VarVersionNo
+    global taskGui, customDir, contextNamespace, contextDisplayOrder, iniPath, VarScriptName, VarVersionNo
 
     ; Double-check that we have the path from INI
     if (customDir = "") {
@@ -100,21 +218,17 @@ SaveTask(openLogseq := false) {
     ; Determine context suffix (not indented, goes right after first line)
     contextSuffix := ""
     contextName := ""
-    if (savedValues.PCCheck) {
-        contextSuffix := "context:: [[c/PC]]"
-        contextName := "PC"
-    } else if (savedValues.OfficeCheck) {
-        contextSuffix := "context:: [[c/Office]]"
-        contextName := "Office"
-    } else if (savedValues.HomeCheck) {
-        contextSuffix := "context:: [[c/Home]]"
-        contextName := "Home"
-    } else if (savedValues.GardenCheck) {
-        contextSuffix := "context:: [[c/Garden]]"
-        contextName := "Garden"
-    } else if (savedValues.ErrandsCheck) {
-        contextSuffix := "context:: [[c/Errands]]"
-        contextName := "Errands"
+
+    ; Check which context checkbox is selected and get the context from contextDisplayOrder
+    ; which stores contexts in the same order as they appear in the GUI
+    Loop contextDisplayOrder.Length {
+        checkboxName := "ContextCheck" . A_Index
+        if (savedValues.HasOwnProp(checkboxName) && savedValues.%checkboxName%) {
+            contextName := contextDisplayOrder[A_Index]
+            ; Build the full context path (namespace/context)
+            contextSuffix := "context:: [[" . contextNamespace . "/" . contextName . "]]"
+            break
+        }
     }
 
     ; Process multiline text (context is added inside this function)
@@ -198,66 +312,135 @@ CancelButtonHandler(ctrl, *) {
 
 ; Function to show the main GUI
 ShowLogseqAddGUI(clipText := "") {
-    global taskGui, taskInputHwnd
+    global taskGui, taskInputHwnd, contextList, contextCheckboxes, contextDisplayOrder, contextNamespace
+
+    ; Scan for contexts before showing GUI
+    if (!ScanContextsInNamespace()) {
+        MsgBox "No contexts found in namespace '" . contextNamespace . "'`n`nPlease check your namespace configuration or create some context pages in Logseq.", "Warning - " VarScriptName
+        ; Continue anyway to allow task creation without context
+    }
+
+    ; Organize contexts into groups
+    contextGroups := OrganizeContexts(contextList)
+
+    ; Debug: Show what was found (can be removed later)
+    ; MsgBox "Top-level: " . contextGroups.topLevel.Length . "`nNested: " . contextGroups.nested.Length
+
+    ; Calculate GUI dimensions - always 2 columns now
+    columnWidth := 280
+    guiWidth := 600
+
+    ; Calculate max rows needed (use the larger of the two columns)
+    maxRows := Max(contextGroups.topLevel.Length, contextGroups.nested.Length)
+    contextGroupHeight := 80 + (maxRows * 25)
 
     ; Create the GUI
-    taskGui := Gui("+AlwaysOnTop +Resize", VarScriptName " " VarVersionNo)
+    taskGui := Gui("+AlwaysOnTop", VarScriptName " " VarVersionNo)
 
-    ; Add status checkboxes (TODO, WAITING, DOING)
-    taskGui.Add("Text", "w400", "Task Status:")
-    statusGroup := taskGui.Add("GroupBox", "w400 h60", "Status")
-
-    cbTodo := taskGui.Add("Checkbox", "xp+10 yp+25 vTodoCheck Checked", "TODO")
-    cbWaiting := taskGui.Add("Checkbox", "x+20 yp vWaitingCheck", "WAITING")
-    cbDoing := taskGui.Add("Checkbox", "x+20 yp vDoingCheck", "DOING")
+    ; Add status checkboxes
+    taskGui.Add("Text", "x10 y10 w" . guiWidth, "Task Status:")
+    taskGui.Add("GroupBox", "x10 y30 w" . guiWidth . " h60", "Status")
+    taskGui.Add("Checkbox", "x20 y55 vTodoCheck Checked", "TODO")
+    taskGui.Add("Checkbox", "x110 y55 vWaitingCheck", "WAITING")
+    taskGui.Add("Checkbox", "x220 y55 vDoingCheck", "DOING")
 
     ; Add task input field
-    taskGui.Add("Text", "xm y+20 w400", "Task Description:")
-    taskInput := taskGui.Add("Edit", "xm w400 r4 vTaskInput", clipText)
-
-    ; Store the hwnd of the task input for our window message handler
+    currentY := 100
+    taskGui.Add("Text", "x10 y" . currentY . " w" . guiWidth, "Task Description:")
+    currentY += 20
+    taskInput := taskGui.Add("Edit", "x10 y" . currentY . " w" . guiWidth . " r4 vTaskInput", clipText)
     taskInputHwnd := taskInput.Hwnd
 
-    ; Add context checkboxes
-    taskGui.Add("Text", "xm y+20 w400", "Context:")
-    contextGroup := taskGui.Add("GroupBox", "w400 h60", "Context")
+    ; Add context section
+    currentY += 90
+    taskGui.Add("Text", "x10 y" . currentY . " w" . guiWidth, "Context (Namespace: " . contextNamespace . "):")
+    currentY += 20
 
-    cbPC := taskGui.Add("Checkbox", "xp+10 yp+25 vPCCheck", "PC (1)")
-    cbOffice := taskGui.Add("Checkbox", "x+10 yp vOfficeCheck", "Office (2)")
-    cbHome := taskGui.Add("Checkbox", "x+10 yp vHomeCheck", "Home (3)")
-    cbGarden := taskGui.Add("Checkbox", "x+10 yp vGardenCheck", "Garden (4)")
-    cbErrands := taskGui.Add("Checkbox", "x+10 yp vErrandsCheck", "Errands (5)")
+    groupBoxY := currentY
+    taskGui.Add("GroupBox", "x10 y" . groupBoxY . " w" . guiWidth . " h" . contextGroupHeight, "Context")
+
+    ; Clear the checkbox arrays
+    contextCheckboxes := []
+    contextDisplayOrder := []  ; Track which context each checkbox represents
+    globalContextIndex := 1
+
+    ; Starting positions
+    leftColumnX := 20
+    rightColumnX := 320
+    columnStartY := groupBoxY + 25
+
+    ; === LEFT COLUMN: Top-level contexts ===
+    if (contextGroups.topLevel.Length > 0) {
+        taskGui.Add("Text", "x" . leftColumnX . " y" . columnStartY . " w250", "─── Top-level ───")
+
+        Loop contextGroups.topLevel.Length {
+            contextName := contextGroups.topLevel[A_Index]
+            contextDisplayOrder.Push(contextName)  ; Store in display order
+            checkboxY := columnStartY + 25 + ((A_Index - 1) * 25)
+
+            shortcutHint := ""
+            if (globalContextIndex <= 10) {
+                shortcutKey := Mod(globalContextIndex, 10)
+                shortcutHint := " (" . shortcutKey . ")"
+            }
+
+            checkboxVarName := "ContextCheck" . globalContextIndex
+            cb := taskGui.Add("Checkbox", "x" . leftColumnX . " y" . checkboxY . " w250 v" . checkboxVarName, contextName . shortcutHint)
+            contextCheckboxes.Push(cb)
+            globalContextIndex++
+        }
+    }
+
+    ; === RIGHT COLUMN: Nested contexts ===
+    if (contextGroups.nested.Length > 0) {
+        taskGui.Add("Text", "x" . rightColumnX . " y" . columnStartY . " w250", "─── Nested ───")
+
+        Loop contextGroups.nested.Length {
+            contextName := contextGroups.nested[A_Index]
+            contextDisplayOrder.Push(contextName)  ; Store in display order
+            checkboxY := columnStartY + 25 + ((A_Index - 1) * 25)
+
+            ; For nested contexts, show the full path
+            ; e.g., "Consume/Read" or "PC/Discord"
+            displayName := contextName
+
+            checkboxVarName := "ContextCheck" . globalContextIndex
+            cb := taskGui.Add("Checkbox", "x" . rightColumnX . " y" . checkboxY . " w250 v" . checkboxVarName, displayName)
+            contextCheckboxes.Push(cb)
+            globalContextIndex++
+        }
+    }
+
+    ; If no contexts at all
+    if (contextList.Length = 0) {
+        taskGui.Add("Text", "x20 y" . (columnStartY + 25), "No contexts found. Check namespace configuration.")
+    }
 
     ; Add buttons
-    submitBtn := taskGui.Add("Button", "xm y+30 w120 Default", "Submit")
-    submitBtn.OnEvent("Click", SubmitButtonHandler)
-
-    submitOpenBtn := taskGui.Add("Button", "x+10 w150", "Submit and Open")
-    submitOpenBtn.OnEvent("Click", SubmitAndOpenButtonHandler)
-
-    cancelBtn := taskGui.Add("Button", "x+10 w100", "Cancel")
-    cancelBtn.OnEvent("Click", CancelButtonHandler)
+    buttonY := groupBoxY + contextGroupHeight + 10
+    taskGui.Add("Button", "x10 y" . buttonY . " w120 Default vSubmitBtn", "Submit").OnEvent("Click", SubmitButtonHandler)
+    taskGui.Add("Button", "x140 y" . buttonY . " w150 vSubmitOpenBtn", "Submit and Open").OnEvent("Click", SubmitAndOpenButtonHandler)
+    taskGui.Add("Button", "x300 y" . buttonY . " w100 vCancelBtn", "Cancel").OnEvent("Click", CancelButtonHandler)
 
     ; Add keyboard shortcuts info
-    taskGui.Add("Text", "xm y+10 w400", "Shortcuts (only work when NOT typing in the text field):")
+    buttonY += 35
+    taskGui.Add("Text", "x10 y" . buttonY . " w" . guiWidth, "Shortcuts (when NOT typing in text field):")
+    buttonY += 20
+    taskGui.Add("Text", "x10 y" . buttonY . " w" . guiWidth, "Status: T=TODO, W=WAITING, D=DOING | Context: 0-9 for first 10 top-level")
 
-    ; Set up events for this GUI
+    ; Set up events
     taskGui.OnEvent("Close", CancelButtonHandler)
     taskGui.OnEvent("Escape", CancelButtonHandler)
+    OnMessage(0x0102, HandleChar)
 
-    ; Set up WM_CHAR handler for the entire window to intercept key presses
-    OnMessage(0x0102, HandleChar)  ; WM_CHAR message
-
-    ; Focus on the task input initially
+    ; Focus and show
     taskInput.Focus()
-
-    ; Show the GUI
     taskGui.Show()
 }
 
 ; Handle WM_CHAR message to intercept key presses
 HandleChar(wParam, lParam, msg, hwnd) {
-    global taskGui, taskInputHwnd
+    global taskGui, taskInputHwnd, contextDisplayOrder
 
     ; Skip processing if the GUI doesn't exist
     if (!taskGui || !IsObject(taskGui))
@@ -277,7 +460,7 @@ HandleChar(wParam, lParam, msg, hwnd) {
             taskGui["TodoCheck"].Value := 1
             taskGui["WaitingCheck"].Value := 0
             taskGui["DoingCheck"].Value := 0
-            return 0  ; Prevent the character from being processed further
+            return 0
 
         case "w", "W":
             taskGui["TodoCheck"].Value := 0
@@ -291,62 +474,35 @@ HandleChar(wParam, lParam, msg, hwnd) {
             taskGui["DoingCheck"].Value := 1
             return 0
 
-        case "1":
-            taskGui["PCCheck"].Value := 1
-            taskGui["OfficeCheck"].Value := 0
-            taskGui["HomeCheck"].Value := 0
-            taskGui["GardenCheck"].Value := 0
-            taskGui["ErrandsCheck"].Value := 0
-            return 0
+        case "0", "1", "2", "3", "4", "5", "6", "7", "8", "9":
+            ; Clear all context checkboxes first
+            Loop contextDisplayOrder.Length {
+                checkboxName := "ContextCheck" . A_Index
+                if (taskGui.HasOwnProp(checkboxName)) {
+                    taskGui[checkboxName].Value := 0
+                }
+            }
 
-        case "2":
-            taskGui["PCCheck"].Value := 0
-            taskGui["OfficeCheck"].Value := 1
-            taskGui["HomeCheck"].Value := 0
-            taskGui["GardenCheck"].Value := 0
-            taskGui["ErrandsCheck"].Value := 0
-            return 0
+            ; Determine which context to select
+            contextIndex := (char = "0") ? 10 : Integer(char)
 
-        case "3":
-            taskGui["PCCheck"].Value := 0
-            taskGui["OfficeCheck"].Value := 0
-            taskGui["HomeCheck"].Value := 1
-            taskGui["GardenCheck"].Value := 0
-            taskGui["ErrandsCheck"].Value := 0
-            return 0
-
-        case "4":
-            taskGui["PCCheck"].Value := 0
-            taskGui["OfficeCheck"].Value := 0
-            taskGui["HomeCheck"].Value := 0
-            taskGui["GardenCheck"].Value := 1
-            taskGui["ErrandsCheck"].Value := 0
-            return 0
-
-        case "5":
-            taskGui["PCCheck"].Value := 0
-            taskGui["OfficeCheck"].Value := 0
-            taskGui["HomeCheck"].Value := 0
-            taskGui["GardenCheck"].Value := 0
-            taskGui["ErrandsCheck"].Value := 1
+            ; Set the selected context if it exists
+            if (contextIndex <= contextDisplayOrder.Length) {
+                checkboxName := "ContextCheck" . contextIndex
+                if (taskGui.HasOwnProp(checkboxName)) {
+                    taskGui[checkboxName].Value := 1
+                }
+            }
             return 0
     }
 }
 
 ; Function for Alt+Enter in Logseq
 LogseqAddTodo() {
-    ; Go to beginning of line
     SendInput "^{Enter}"
-
-    ; Go to the end of the line
     SendInput "{End}"
-
-    ; Press Shift+Enter to create a new line
     SendInput "+{Enter}"
-
-    ; Type "context:: [["
     SendInput "context:: [[-/"
-
     return
 }
 
@@ -365,9 +521,33 @@ ResetLogseqPath(*) {
     }
 }
 
+; Tray menu handler for Reset Context Namespace
+ResetContextNamespace(*) {
+    global contextNamespace, iniPath, VarScriptName, VarVersionNo
+
+    currentNS := (contextNamespace != "") ? contextNamespace : "(not set)"
+
+    result := MsgBox("Current namespace: " . currentNS . "`n`nDo you want to set a new context namespace?", VarScriptName " - Reset Namespace", "YesNo Icon?")
+
+    if (result = "Yes") {
+        ib := InputBox("Enter the namespace for your contexts (e.g., 'c' for c/PC, c/Office):", VarScriptName " - Set Namespace", "w300 h150", contextNamespace)
+
+        if (ib.Result = "OK" && ib.Value != "") {
+            contextNamespace := Trim(ib.Value)
+            IniWrite(contextNamespace, iniPath, "General", "ContextNamespace")
+
+            if (ScanContextsInNamespace()) {
+                TrayTip "Namespace updated to: " . contextNamespace . "`nFound " . contextList.Length . " context(s)", VarScriptName " " VarVersionNo, 1
+            } else {
+                TrayTip "Namespace updated to: " . contextNamespace . "`nNo contexts found yet", VarScriptName " " VarVersionNo, 1
+            }
+        }
+    }
+}
+
 ; Tray menu handler for About
 ShowAbout(*) {
-    global customDir, VarScriptName, VarVersionNo
+    global customDir, contextNamespace, contextList, VarScriptName, VarVersionNo
 
     aboutText := VarScriptName . " " . VarVersionNo . "`n`n"
     aboutText .= "HOW TO USE:`n"
@@ -377,11 +557,13 @@ ShowAbout(*) {
     aboutText .= "4. Click Submit to add to journal`n`n"
     aboutText .= "KEYBOARD SHORTCUTS (when not typing):`n"
     aboutText .= "T = TODO, W = WAITING, D = DOING`n"
-    aboutText .= "1 = PC, 2 = Office, 3 = Home, 4 = Garden, 5 = Errands`n`n"
+    aboutText .= "0-9 = First 10 top-level contexts`n`n"
     aboutText .= "MULTILINE SUPPORT:`n"
     aboutText .= "First line becomes the task, remaining lines become sub-blocks`n`n"
     aboutText .= "CURRENT SETTINGS:`n"
     aboutText .= "Journal Path: " . customDir . "`n"
+    aboutText .= "Context Namespace: " . contextNamespace . "`n"
+    aboutText .= "Contexts Found: " . contextList.Length . "`n"
 
     MsgBox aboutText, "About " . VarScriptName, 64
 }
@@ -390,75 +572,76 @@ ShowAbout(*) {
 ; Script Initialization
 ;------------------------------------------------------------------------------
 
-;------------------------------------------------------------------------------
-;Icon Tip
-;------------------------------------------------------------------------------
 A_IconTip := VarScriptName " " VarVersionNo " " Varblurb
 
-;------------------------------------------------------------------------------
-; Add ICON to your tray. REMEMBER to put an ICO file in same folder as the script.
-;------------------------------------------------------------------------------
 Try TraySetIcon(A_ScriptDir "\" VarScriptName ".ico")
 Catch
     TrayTip "Remember to add " VarScriptName ".ico to same folder as " VarScriptName ".ahk", VarScriptName
 
 ;------------------------------------------------------------------------------
-; Setup Tray Menu - Add custom items while keeping standard ones
+; Setup Tray Menu
 ;------------------------------------------------------------------------------
 A_TrayMenu.Insert("1&", "About " . VarScriptName, ShowAbout)
 A_TrayMenu.Insert("2&", "Reset Logseq Path", ResetLogseqPath)
-A_TrayMenu.Insert("3&")  ; Separator
+A_TrayMenu.Insert("3&", "Reset Context Namespace", ResetContextNamespace)
+A_TrayMenu.Insert("4&")  ; Separator
 
 ;------------------------------------------------------------------------------
-; Check if INI file exists with path to folder where you want to add TODOs
+; Check if INI file exists with path to folder
 ;------------------------------------------------------------------------------
 if !IniRead(iniPath, "General", "CustomPath", 0)
 {
-    ; Dialog for choosing folder
     MsgBox "Choose the folder where your journal files are.", VarScriptName " " VarVersionNo
     if !customDir := DirSelect()
-        ; Warning that no folder is selected
         MsgBox "You have to select journalfolder for script to work.", "Error -" VarScriptName " " VarVersionNo
-        ;~ ExitApp
 
     IniWrite(customDir, iniPath, "General", "CustomPath")
 }
 customDir := IniRead(iniPath, "General", "CustomPath")
 
-; If the folder is selected show welcome message
+; Check if namespace is configured
+if !IniRead(iniPath, "General", "ContextNamespace", 0)
+{
+    MsgBox "Now, please specify the namespace for your contexts.`n`nFor example, if your contexts are 'c/PC', 'c/Office', etc., enter 'c'", VarScriptName " " VarVersionNo
+
+    ib := InputBox("Enter the namespace for your contexts:", VarScriptName " - Set Namespace", "w300 h150", "c")
+
+    if (ib.Result = "OK" && ib.Value != "") {
+        contextNamespace := Trim(ib.Value)
+        IniWrite(contextNamespace, iniPath, "General", "ContextNamespace")
+    } else {
+        MsgBox "You need to set a context namespace for the script to work properly.", "Warning - " VarScriptName " " VarVersionNo
+        contextNamespace := "c"
+        IniWrite(contextNamespace, iniPath, "General", "ContextNamespace")
+    }
+}
+contextNamespace := IniRead(iniPath, "General", "ContextNamespace")
+
+; Scan for contexts on startup
+ScanContextsInNamespace()
+
+; Show welcome message
 If IniRead(iniPath, "General", "CustomPath", 0)
-    TrayTip "Capturing to: " customDir "`nCapture to Logseq by pressing CTRL+Shift+L", VarScriptName " " VarVersionNo
+    TrayTip "Capturing to: " customDir "`nNamespace: " contextNamespace "`nContexts found: " contextList.Length "`n`nCapture to Logseq by pressing CTRL+Shift+L", VarScriptName " " VarVersionNo
 
 ;------------------------------------------------------------------------------
 ; Hotkeys
 ;------------------------------------------------------------------------------
-; Main hotkey to launch the task input GUI
 +^l:: {
-    ; Save the current clipboard content
     oldClip := ClipboardAll()
-
-    ; Clear the clipboard
     A_Clipboard := ""
-
-    ; Capture selection by sending Ctrl+C
     Send "^c"
 
-    ; Wait for the clipboard to contain data
     if ClipWait(1) {
-        ; Show the GUI with the selected text
         clipText := A_Clipboard
         ShowLogseqAddGUI(clipText)
     } else {
-        ; If nothing was selected, show an empty GUI
         ShowLogseqAddGUI("")
     }
 
-    ; Restore the original clipboard
     A_Clipboard := oldClip
 }
 
-; Logseq TODO Workflow Script
-; Only activate this hotkey when Logseq is the active window
 #HotIf WinActive("ahk_exe Logseq.exe")
 !Enter::LogseqAddTodo()
 #HotIf
