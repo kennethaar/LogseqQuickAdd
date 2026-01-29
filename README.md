@@ -10,7 +10,12 @@ Features:
 
 Your clipboard is added as default text. After OK it adds TODO. Then it tries to switch to Logseq.
 
-![image](https://github.com/kennethaar/CaptureToLogseq/assets/5931199/9deeff67-728f-460f-b883-389c5beaf3bb)
+<img width="526" height="435" alt="image" src="https://github.com/user-attachments/assets/9d4a5f87-34f3-4969-9e40-8c16afe0bfff" />
+
+How It looks in Logseq:
+
+<img width="746" height="131" alt="image" src="https://github.com/user-attachments/assets/a45919e8-7b66-49e4-ac78-a4a1be5948cb" />
+
 
 ## Requirements:
 - Windows
