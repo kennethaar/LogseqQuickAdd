@@ -21,7 +21,7 @@
 ; Global Variables - Must be declared first
 ;------------------------------------------------------------------------------
 global VarScriptName := "LogseqQuickAdd"
-global VarVersionNo := "v016"
+global VarVersionNo := "v018"
 global Varblurb := "`nPress SHIFT+CTRL+L to add`nyour clipboard as task to Logseq"
 global customDir := ""
 global contextNamespace := ""
@@ -145,6 +145,55 @@ OrganizeContexts(contextList) {
     }
 
     return result
+}
+
+; Helper function to find an available letter shortcut for a context
+; Tries first letter, then subsequent letters, then letters from after "/" in nested contexts
+; Finally falls back to any available letter from the alphabet
+FindAvailableLetter(contextName, usedLetters) {
+    ; For nested contexts like "Consume/Read", try the part after the last "/"
+    nameToCheck := contextName
+    if (InStr(contextName, "/")) {
+        parts := StrSplit(contextName, "/")
+        nameToCheck := parts[parts.Length]  ; Get last part (e.g., "Read" from "Consume/Read")
+    }
+    
+    ; Try each letter in the name
+    Loop StrLen(nameToCheck) {
+        letter := StrLower(SubStr(nameToCheck, A_Index, 1))
+        ; Check if it's a letter (a-z or Norwegian) and not already used
+        if (letter ~= "^[a-zæøå]$" && !usedLetters.Has(letter)) {
+            return letter
+        }
+    }
+    
+    ; If nested and no letter found, also try the parent parts
+    if (InStr(contextName, "/")) {
+        parts := StrSplit(contextName, "/")
+        Loop parts.Length - 1 {
+            partName := parts[A_Index]
+            Loop StrLen(partName) {
+                letter := StrLower(SubStr(partName, A_Index, 1))
+                if (letter ~= "^[a-zæøå]$" && !usedLetters.Has(letter)) {
+                    return letter
+                }
+            }
+        }
+    }
+    
+    ; Fallback: try all letters in the alphabet (including Norwegian)
+    allLetters := "abcefghijklmnopqrsuvxyz"  ; Excluding t, w, d (reserved for status)
+    allLetters .= "æøå"  ; Add Norwegian letters
+    
+    Loop StrLen(allLetters) {
+        letter := SubStr(allLetters, A_Index, 1)
+        if (!usedLetters.Has(letter)) {
+            return letter
+        }
+    }
+    
+    ; No available letter found
+    return ""
 }
 
 ; Function to process multiline text for Logseq
@@ -363,6 +412,11 @@ ShowLogseqAddGUI(clipText := "") {
     ; Clear the checkbox arrays
     contextCheckboxes := []
     contextDisplayOrder := []  ; Track which context each checkbox represents
+    global contextShortcutMap := Map()  ; Map letter shortcuts to context indices
+    usedLetters := Map()  ; Track which letters are already used
+    usedLetters["t"] := true  ; Reserved for TODO
+    usedLetters["w"] := true  ; Reserved for WAITING
+    usedLetters["d"] := true  ; Reserved for DOING
     globalContextIndex := 1
 
     ; Starting positions
@@ -381,8 +435,17 @@ ShowLogseqAddGUI(clipText := "") {
 
             shortcutHint := ""
             if (globalContextIndex <= 10) {
+                ; First 10 get number shortcuts
                 shortcutKey := Mod(globalContextIndex, 10)
                 shortcutHint := " (" . shortcutKey . ")"
+            } else {
+                ; Others get letter shortcuts
+                letterShortcut := FindAvailableLetter(contextName, usedLetters)
+                if (letterShortcut != "") {
+                    usedLetters[letterShortcut] := true
+                    contextShortcutMap[letterShortcut] := globalContextIndex
+                    shortcutHint := " (" . StrUpper(letterShortcut) . ")"
+                }
             }
 
             checkboxVarName := "ContextCheck" . globalContextIndex
@@ -405,8 +468,17 @@ ShowLogseqAddGUI(clipText := "") {
             ; e.g., "Consume/Read" or "PC/Discord"
             displayName := contextName
 
+            ; Nested contexts get letter shortcuts
+            letterShortcut := FindAvailableLetter(contextName, usedLetters)
+            shortcutHint := ""
+            if (letterShortcut != "") {
+                usedLetters[letterShortcut] := true
+                contextShortcutMap[letterShortcut] := globalContextIndex
+                shortcutHint := " (" . StrUpper(letterShortcut) . ")"
+            }
+
             checkboxVarName := "ContextCheck" . globalContextIndex
-            cb := taskGui.Add("Checkbox", "x" . rightColumnX . " y" . checkboxY . " w250 v" . checkboxVarName, displayName)
+            cb := taskGui.Add("Checkbox", "x" . rightColumnX . " y" . checkboxY . " w250 v" . checkboxVarName, displayName . shortcutHint)
             contextCheckboxes.Push(cb)
             globalContextIndex++
         }
@@ -427,7 +499,7 @@ ShowLogseqAddGUI(clipText := "") {
     buttonY += 35
     taskGui.Add("Text", "x10 y" . buttonY . " w" . guiWidth, "Shortcuts (when NOT typing in text field):")
     buttonY += 20
-    taskGui.Add("Text", "x10 y" . buttonY . " w" . guiWidth, "Status: T=TODO, W=WAITING, D=DOING | Context: 0-9 for first 10 top-level")
+    taskGui.Add("Text", "x10 y" . buttonY . " w" . guiWidth, "Status: T=TODO, W=WAITING, D=DOING | Context: 0-9, or letter shown")
 
     ; Set up events
     taskGui.OnEvent("Close", CancelButtonHandler)
@@ -441,7 +513,7 @@ ShowLogseqAddGUI(clipText := "") {
 
 ; Handle WM_CHAR message to intercept key presses
 HandleChar(wParam, lParam, msg, hwnd) {
-    global taskGui, taskInputHwnd, contextDisplayOrder
+    global taskGui, taskInputHwnd, contextDisplayOrder, contextShortcutMap
 
     ; Skip processing if the GUI doesn't exist
     if (!taskGui || !IsObject(taskGui))
@@ -454,22 +526,23 @@ HandleChar(wParam, lParam, msg, hwnd) {
 
     ; Get the character typed
     char := Chr(wParam)
+    charLower := StrLower(char)
 
-    ; Process the character
-    Switch char {
-        case "t", "T":
+    ; Process the character - Status shortcuts first
+    Switch charLower {
+        case "t":
             taskGui["TodoCheck"].Value := 1
             taskGui["WaitingCheck"].Value := 0
             taskGui["DoingCheck"].Value := 0
             return 0
 
-        case "w", "W":
+        case "w":
             taskGui["TodoCheck"].Value := 0
             taskGui["WaitingCheck"].Value := 1
             taskGui["DoingCheck"].Value := 0
             return 0
 
-        case "d", "D":
+        case "d":
             taskGui["TodoCheck"].Value := 0
             taskGui["WaitingCheck"].Value := 0
             taskGui["DoingCheck"].Value := 1
@@ -495,6 +568,26 @@ HandleChar(wParam, lParam, msg, hwnd) {
                 }
             }
             return 0
+
+        default:
+            ; Check if this letter is a context shortcut
+            if (contextShortcutMap.Has(charLower)) {
+                ; Clear all context checkboxes first
+                Loop contextDisplayOrder.Length {
+                    checkboxName := "ContextCheck" . A_Index
+                    Try {
+                        taskGui[checkboxName].Value := 0
+                    }
+                }
+
+                ; Set the selected context
+                contextIndex := contextShortcutMap[charLower]
+                checkboxName := "ContextCheck" . contextIndex
+                Try {
+                    taskGui[checkboxName].Value := 1
+                }
+                return 0
+            }
     }
 }
 
@@ -558,7 +651,8 @@ ShowAbout(*) {
     aboutText .= "4. Click Submit to add to journal`n`n"
     aboutText .= "KEYBOARD SHORTCUTS (when not typing):`n"
     aboutText .= "T = TODO, W = WAITING, D = DOING`n"
-    aboutText .= "0-9 = First 10 top-level contexts`n`n"
+    aboutText .= "0-9 = First 10 top-level contexts`n"
+    aboutText .= "Letters = Additional contexts (shown in parentheses)`n`n"
     aboutText .= "MULTILINE SUPPORT:`n"
     aboutText .= "First line becomes the task, remaining lines become sub-blocks`n`n"
     aboutText .= "CURRENT SETTINGS:`n"
