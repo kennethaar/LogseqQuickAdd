@@ -1,4 +1,4 @@
-﻿;------------------------------------------------------------------------------
+;------------------------------------------------------------------------------
 ;                           LogseqQuickadd
 ;
 ; A way to easily capture your clipboard or anything you would like to Logseq.
@@ -9,6 +9,7 @@
 ;                       Enhanced with dynamic context scanning
 ;                       Improved two-column layout
 ;                       Fixed context mapping bug
+;                       Fixed number key shortcuts for context selection
 ;
 ;------------------------------------------------------------------------------
 ;SETTINGSa
@@ -20,7 +21,7 @@
 ; Global Variables - Must be declared first
 ;------------------------------------------------------------------------------
 global VarScriptName := "LogseqQuickAdd"
-global VarVersionNo := "v015"
+global VarVersionNo := "v016"
 global Varblurb := "`nPress SHIFT+CTRL+L to add`nyour clipboard as task to Logseq"
 global customDir := ""
 global contextNamespace := ""
@@ -447,8 +448,8 @@ HandleChar(wParam, lParam, msg, hwnd) {
         return
 
     ; Only process keypresses when focus is NOT on our text input
-    currentFocusHwnd := ControlGetFocus("ahk_id " taskGui.Hwnd)
-    if (currentFocusHwnd == taskInputHwnd)
+    ; The hwnd parameter tells us which control received this WM_CHAR message
+    if (hwnd == taskInputHwnd)
         return  ; Let normal typing work in the text field
 
     ; Get the character typed
@@ -478,7 +479,7 @@ HandleChar(wParam, lParam, msg, hwnd) {
             ; Clear all context checkboxes first
             Loop contextDisplayOrder.Length {
                 checkboxName := "ContextCheck" . A_Index
-                if (taskGui.HasOwnProp(checkboxName)) {
+                Try {
                     taskGui[checkboxName].Value := 0
                 }
             }
@@ -489,7 +490,7 @@ HandleChar(wParam, lParam, msg, hwnd) {
             ; Set the selected context if it exists
             if (contextIndex <= contextDisplayOrder.Length) {
                 checkboxName := "ContextCheck" . contextIndex
-                if (taskGui.HasOwnProp(checkboxName)) {
+                Try {
                     taskGui[checkboxName].Value := 1
                 }
             }
