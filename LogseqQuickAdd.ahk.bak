@@ -12,6 +12,7 @@
 ;                       Fixed number key shortcuts for context selection
 ;                       Added Logseq API support with FileAppend fallback
 ;                       API always preferred; file fallback with warning
+;                       Added None status, letter cycling, parent→child nav
 ;
 ;------------------------------------------------------------------------------
 ;SETTINGS
@@ -23,7 +24,7 @@
 ; Global Variables - Must be declared first
 ;------------------------------------------------------------------------------
 global VarScriptName := "LogseqQuickAdd"
-global VarVersionNo := "v020"
+global VarVersionNo := "v021"
 global Varblurb := "`nPress SHIFT+CTRL+L to add`nyour clipboard as task to Logseq"
 global customDir := ""
 global contextNamespace := ""
@@ -34,6 +35,10 @@ global contextCheckboxes := []  ; Array to store checkbox controls
 global contextDisplayOrder := []  ; Array to store contexts in the order they appear in GUI
 global iniPath := A_ScriptDir "\" VarScriptName ".ini"
 global logseqApiToken := ""
+global cycleKey := ""          ; Track which letter key is being cycled
+global cycleIndex := 0         ; Current position in the cycle
+global cycleTimer := 0         ; Timer handle for cycle reset
+global selectedTopLevel := ""  ; Currently selected top-level context (for parent→child nav)
 
 ;------------------------------------------------------------------------------
 ; Helper Functions - Define before using them
@@ -342,13 +347,14 @@ SaveTask(openLogseq := false) {
     savedValues := taskGui.Submit(false)  ; false to not destroy the GUI yet
 
     ; Determine the status prefix
-    statusPrefix := "- "  ; Start with dash and space for Logseq tasks
+    statusPrefix := "- "  ; Start with dash and space for Logseq blocks
     if (savedValues.TodoCheck)
         statusPrefix .= "TODO "
     else if (savedValues.WaitingCheck)
         statusPrefix .= "WAITING "
     else if (savedValues.DoingCheck)
         statusPrefix .= "DOING "
+    ; NoneCheck = just "- " with no status keyword
 
     ; Get the task text
     taskText := savedValues.TaskInput
@@ -468,10 +474,11 @@ ShowLogseqAddGUI(clipText := "") {
 
     ; Add status checkboxes
     taskGui.Add("Text", "x10 y10 w" . guiWidth, "Task Status:")
-    taskGui.Add("GroupBox", "x10 y30 w" . guiWidth . " h60", "Status")
-    taskGui.Add("Checkbox", "x20 y55 vTodoCheck Checked", "TODO")
-    taskGui.Add("Checkbox", "x110 y55 vWaitingCheck", "WAITING")
-    taskGui.Add("Checkbox", "x220 y55 vDoingCheck", "DOING")
+    taskGui.Add("GroupBox", "x10 y30 w" . guiWidth . " h60", "Status (T/W/D/| for None)")
+    taskGui.Add("Checkbox", "x20 y55 vNoneCheck", "None")
+    taskGui.Add("Checkbox", "x100 y55 vTodoCheck Checked", "TODO")
+    taskGui.Add("Checkbox", "x190 y55 vWaitingCheck", "WAITING")
+    taskGui.Add("Checkbox", "x300 y55 vDoingCheck", "DOING")
 
     ; Add task input field
     currentY := 100
@@ -578,7 +585,9 @@ ShowLogseqAddGUI(clipText := "") {
     buttonY += 35
     taskGui.Add("Text", "x10 y" . buttonY . " w" . guiWidth, "Shortcuts (when NOT typing in text field):")
     buttonY += 20
-    taskGui.Add("Text", "x10 y" . buttonY . " w" . guiWidth, "Status: T=TODO, W=WAITING, D=DOING | Context: 0-9, or letter shown")
+    taskGui.Add("Text", "x10 y" . buttonY . " w" . guiWidth, "Status: T=TODO, W=WAITING, D=DOING, |=None")
+    buttonY += 15
+    taskGui.Add("Text", "x10 y" . buttonY . " w" . guiWidth, "Context: Letter=cycle top-level, then letter=pick sub-context")
 
     ; Set up events
     taskGui.OnEvent("Close", CancelButtonHandler)
@@ -593,13 +602,13 @@ ShowLogseqAddGUI(clipText := "") {
 ; Handle WM_CHAR message to intercept key presses
 HandleChar(wParam, lParam, msg, hwnd) {
     global taskGui, taskInputHwnd, contextDisplayOrder, contextShortcutMap
+    global contextList, cycleKey, cycleIndex, cycleTimer, selectedTopLevel
 
     ; Skip processing if the GUI doesn't exist
     if (!taskGui || !IsObject(taskGui))
         return
 
     ; Only process keypresses when focus is NOT on our text input
-    ; The hwnd parameter tells us which control received this WM_CHAR message
     if (hwnd == taskInputHwnd)
         return  ; Let normal typing work in the text field
 
@@ -607,67 +616,173 @@ HandleChar(wParam, lParam, msg, hwnd) {
     char := Chr(wParam)
     charLower := StrLower(char)
 
-    ; Process the character - Status shortcuts first
+    ; --- Helper closure: clear all context checkboxes ---
+    ClearAllContexts() {
+        Loop contextDisplayOrder.Length {
+            checkboxName := "ContextCheck" . A_Index
+            Try {
+                taskGui[checkboxName].Value := 0
+            }
+        }
+    }
+
+    ; --- Helper closure: select context by index (1-based into contextDisplayOrder) ---
+    SelectContextByIndex(idx) {
+        ClearAllContexts()
+        if (idx >= 1 && idx <= contextDisplayOrder.Length) {
+            checkboxName := "ContextCheck" . idx
+            Try {
+                taskGui[checkboxName].Value := 1
+            }
+            ; Track if this is a top-level context for parent→child navigation
+            ctxName := contextDisplayOrder[idx]
+            if (!InStr(ctxName, "/")) {
+                selectedTopLevel := ctxName
+            } else {
+                selectedTopLevel := ""
+            }
+        }
+    }
+
+    ; --- Helper closure: find the display index for a context name ---
+    FindContextIndex(name) {
+        Loop contextDisplayOrder.Length {
+            if (contextDisplayOrder[A_Index] = name)
+                return A_Index
+        }
+        return 0
+    }
+
+    ; === PIPE | = None status ===
+    if (charLower = "|") {
+        taskGui["NoneCheck"].Value := 1
+        taskGui["TodoCheck"].Value := 0
+        taskGui["WaitingCheck"].Value := 0
+        taskGui["DoingCheck"].Value := 0
+        return 0
+    }
+
+    ; === STATUS SHORTCUTS ===
     Switch charLower {
         case "t":
+            taskGui["NoneCheck"].Value := 0
             taskGui["TodoCheck"].Value := 1
             taskGui["WaitingCheck"].Value := 0
             taskGui["DoingCheck"].Value := 0
             return 0
 
         case "w":
+            taskGui["NoneCheck"].Value := 0
             taskGui["TodoCheck"].Value := 0
             taskGui["WaitingCheck"].Value := 1
             taskGui["DoingCheck"].Value := 0
             return 0
 
         case "d":
+            taskGui["NoneCheck"].Value := 0
             taskGui["TodoCheck"].Value := 0
             taskGui["WaitingCheck"].Value := 0
             taskGui["DoingCheck"].Value := 1
             return 0
+    }
 
-        case "0", "1", "2", "3", "4", "5", "6", "7", "8", "9":
-            ; Clear all context checkboxes first
+    ; === CONTEXT SELECTION (letter-based with cycling and parent→child) ===
+    if (charLower ~= "^[a-zæøå]$") {
+
+        ; --- STEP 1: If a top-level context is selected, try parent→child first ---
+        if (selectedTopLevel != "") {
+            subOptions := []
             Loop contextDisplayOrder.Length {
-                checkboxName := "ContextCheck" . A_Index
-                Try {
-                    taskGui[checkboxName].Value := 0
-                }
-            }
-
-            ; Determine which context to select
-            contextIndex := (char = "0") ? 10 : Integer(char)
-
-            ; Set the selected context if it exists
-            if (contextIndex <= contextDisplayOrder.Length) {
-                checkboxName := "ContextCheck" . contextIndex
-                Try {
-                    taskGui[checkboxName].Value := 1
-                }
-            }
-            return 0
-
-        default:
-            ; Check if this letter is a context shortcut
-            if (contextShortcutMap.Has(charLower)) {
-                ; Clear all context checkboxes first
-                Loop contextDisplayOrder.Length {
-                    checkboxName := "ContextCheck" . A_Index
-                    Try {
-                        taskGui[checkboxName].Value := 0
+                ctxName := contextDisplayOrder[A_Index]
+                ; Match nested contexts under the selected top-level that start with pressed letter
+                if (InStr(ctxName, "/")) {
+                    parts := StrSplit(ctxName, "/")
+                    parentPart := parts[1]
+                    childPart := parts[parts.Length]
+                    if (parentPart = selectedTopLevel && StrLower(SubStr(childPart, 1, 1)) = charLower) {
+                        subOptions.Push({name: ctxName, index: A_Index})
                     }
                 }
+            }
 
-                ; Set the selected context
-                contextIndex := contextShortcutMap[charLower]
-                checkboxName := "ContextCheck" . contextIndex
-                Try {
-                    taskGui[checkboxName].Value := 1
+            if (subOptions.Length > 0) {
+                ; Found sub-contexts — select the first match (or cycle if multiple)
+                if (charLower = cycleKey && subOptions.Length > 1) {
+                    cycleIndex := Mod(cycleIndex, subOptions.Length) + 1
+                } else {
+                    cycleKey := charLower
+                    cycleIndex := 1
                 }
+                SelectContextByIndex(subOptions[cycleIndex].index)
+                ; Keep selectedTopLevel so user can pick another sub-context
+                selectedTopLevel := selectedTopLevel
+                ; Reset cycle timer
+                if (cycleTimer)
+                    SetTimer(cycleTimer, 0)
+                cycleTimer := SetTimer(ResetCycleState, -1000)
                 return 0
             }
+            ; No sub-contexts matched — fall through to top-level cycling
+        }
+
+        ; --- STEP 2: Cycle through top-level contexts starting with this letter ---
+        topOptions := []
+        Loop contextDisplayOrder.Length {
+            ctxName := contextDisplayOrder[A_Index]
+            if (!InStr(ctxName, "/") && StrLower(SubStr(ctxName, 1, 1)) = charLower) {
+                topOptions.Push({name: ctxName, index: A_Index})
+            }
+        }
+
+        if (topOptions.Length > 0) {
+            if (charLower = cycleKey) {
+                ; Same letter pressed again — cycle to next
+                cycleIndex := Mod(cycleIndex, topOptions.Length) + 1
+            } else {
+                ; New letter — start fresh
+                cycleKey := charLower
+                cycleIndex := 1
+            }
+            SelectContextByIndex(topOptions[cycleIndex].index)
+            ; Reset cycle timer (1 second)
+            if (cycleTimer)
+                SetTimer(cycleTimer, 0)
+            cycleTimer := SetTimer(ResetCycleState, -1000)
+            return 0
+        }
+
+        ; --- STEP 3: Fallback — check legacy letter shortcut map ---
+        if (contextShortcutMap.Has(charLower)) {
+            ClearAllContexts()
+            contextIndex := contextShortcutMap[charLower]
+            checkboxName := "ContextCheck" . contextIndex
+            Try {
+                taskGui[checkboxName].Value := 1
+            }
+            ; Track if top-level
+            ctxName := contextDisplayOrder[contextIndex]
+            selectedTopLevel := (!InStr(ctxName, "/")) ? ctxName : ""
+            return 0
+        }
     }
+
+    ; === NUMBER KEYS (0-9) still work for direct context selection ===
+    if (charLower ~= "^[0-9]$") {
+        ClearAllContexts()
+        contextIndex := (char = "0") ? 10 : Integer(char)
+        if (contextIndex <= contextDisplayOrder.Length) {
+            SelectContextByIndex(contextIndex)
+        }
+        return 0
+    }
+}
+
+; Timer callback to reset cycling state
+ResetCycleState() {
+    global cycleKey, cycleIndex, cycleTimer
+    cycleKey := ""
+    cycleIndex := 0
+    cycleTimer := 0
 }
 
 ; Function for Alt+Enter in Logseq
@@ -752,9 +867,10 @@ ShowAbout(*) {
     aboutText .= "3. Optionally select a context`n"
     aboutText .= "4. Click Submit to add to journal`n`n"
     aboutText .= "KEYBOARD SHORTCUTS (when not typing):`n"
-    aboutText .= "T = TODO, W = WAITING, D = DOING`n"
-    aboutText .= "0-9 = First 10 top-level contexts`n"
-    aboutText .= "Letters = Additional contexts (shown in parentheses)`n`n"
+    aboutText .= "T = TODO, W = WAITING, D = DOING, | = None (no status)`n"
+    aboutText .= "Letters = Cycle through top-level contexts starting with that letter`n"
+    aboutText .= "  → Then press another letter to pick a sub-context`n"
+    aboutText .= "0-9 = Direct context selection (first 10)`n`n"
     aboutText .= "MULTILINE SUPPORT:`n"
     aboutText .= "First line becomes the task, remaining lines become sub-blocks`n`n"
     aboutText .= "SAVE METHOD:`n"
