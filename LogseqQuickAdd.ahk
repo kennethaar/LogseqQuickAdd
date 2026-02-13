@@ -510,27 +510,16 @@ ShowLogseqAddGUI(clipText := "") {
 
     ; === LEFT COLUMN: Top-level contexts ===
     if (contextGroups.topLevel.Length > 0) {
-        taskGui.Add("Text", "x" . leftColumnX . " y" . columnStartY . " w250", "─── Top-level ───")
+        taskGui.Add("Text", "x" . leftColumnX . " y" . columnStartY . " w250", "─── Top-level (press first letter to cycle) ───")
 
         Loop contextGroups.topLevel.Length {
             contextName := contextGroups.topLevel[A_Index]
             contextDisplayOrder.Push(contextName)  ; Store in display order
             checkboxY := columnStartY + 25 + ((A_Index - 1) * 25)
 
-            shortcutHint := ""
-            if (globalContextIndex <= 10) {
-                ; First 10 get number shortcuts
-                shortcutKey := Mod(globalContextIndex, 10)
-                shortcutHint := " (" . shortcutKey . ")"
-            } else {
-                ; Others get letter shortcuts
-                letterShortcut := FindAvailableLetter(contextName, usedLetters)
-                if (letterShortcut != "") {
-                    usedLetters[letterShortcut] := true
-                    contextShortcutMap[letterShortcut] := globalContextIndex
-                    shortcutHint := " (" . StrUpper(letterShortcut) . ")"
-                }
-            }
+            ; Show first letter as hint (cycling handles the rest)
+            firstLetter := StrUpper(SubStr(contextName, 1, 1))
+            shortcutHint := " (" . firstLetter . ")"
 
             checkboxVarName := "ContextCheck" . globalContextIndex
             cb := taskGui.Add("Checkbox", "x" . leftColumnX . " y" . checkboxY . " w250 v" . checkboxVarName, contextName . shortcutHint)
@@ -541,28 +530,21 @@ ShowLogseqAddGUI(clipText := "") {
 
     ; === RIGHT COLUMN: Nested contexts ===
     if (contextGroups.nested.Length > 0) {
-        taskGui.Add("Text", "x" . rightColumnX . " y" . columnStartY . " w250", "─── Nested ───")
+        taskGui.Add("Text", "x" . rightColumnX . " y" . columnStartY . " w250", "─── Nested (select parent, then letter) ───")
 
         Loop contextGroups.nested.Length {
             contextName := contextGroups.nested[A_Index]
             contextDisplayOrder.Push(contextName)  ; Store in display order
             checkboxY := columnStartY + 25 + ((A_Index - 1) * 25)
 
-            ; For nested contexts, show the full path
-            ; e.g., "Consume/Read" or "PC/Discord"
-            displayName := contextName
-
-            ; Nested contexts get letter shortcuts
-            letterShortcut := FindAvailableLetter(contextName, usedLetters)
-            shortcutHint := ""
-            if (letterShortcut != "") {
-                usedLetters[letterShortcut] := true
-                contextShortcutMap[letterShortcut] := globalContextIndex
-                shortcutHint := " (" . StrUpper(letterShortcut) . ")"
-            }
+            ; Show first letter of the child part as hint
+            parts := StrSplit(contextName, "/")
+            childPart := parts[parts.Length]
+            firstLetter := StrUpper(SubStr(childPart, 1, 1))
+            shortcutHint := " (" . firstLetter . ")"
 
             checkboxVarName := "ContextCheck" . globalContextIndex
-            cb := taskGui.Add("Checkbox", "x" . rightColumnX . " y" . checkboxY . " w250 v" . checkboxVarName, displayName . shortcutHint)
+            cb := taskGui.Add("Checkbox", "x" . rightColumnX . " y" . checkboxY . " w250 v" . checkboxVarName, contextName . shortcutHint)
             contextCheckboxes.Push(cb)
             globalContextIndex++
         }

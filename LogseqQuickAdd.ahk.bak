@@ -190,7 +190,7 @@ FindAvailableLetter(contextName, usedLetters) {
     }
 
     ; Fallback: try all letters in the alphabet (including Norwegian)
-    allLetters := "abcefghijklmnopqrsuvxyz"  ; Excluding t, w, d (reserved for status)
+    allLetters := "abcdefghijklmnopqrstuvwxyz"  ; All letters available (status uses numbers)
     allLetters .= "æøå"  ; Add Norwegian letters
 
     Loop StrLen(allLetters) {
@@ -474,11 +474,11 @@ ShowLogseqAddGUI(clipText := "") {
 
     ; Add status checkboxes
     taskGui.Add("Text", "x10 y10 w" . guiWidth, "Task Status:")
-    taskGui.Add("GroupBox", "x10 y30 w" . guiWidth . " h60", "Status (T/W/D/| for None)")
-    taskGui.Add("Checkbox", "x20 y55 vNoneCheck", "None")
-    taskGui.Add("Checkbox", "x100 y55 vTodoCheck Checked", "TODO")
-    taskGui.Add("Checkbox", "x190 y55 vWaitingCheck", "WAITING")
-    taskGui.Add("Checkbox", "x300 y55 vDoingCheck", "DOING")
+    taskGui.Add("GroupBox", "x10 y30 w" . guiWidth . " h60", "Status (|/0=None, 1=TODO, 2=WAITING, 3=DOING)")
+    taskGui.Add("Checkbox", "x20 y55 vNoneCheck", "(|/0) None")
+    taskGui.Add("Checkbox", "x140 y55 vTodoCheck Checked", "(1) TODO")
+    taskGui.Add("Checkbox", "x260 y55 vWaitingCheck", "(2) WAITING")
+    taskGui.Add("Checkbox", "x400 y55 vDoingCheck", "(3) DOING")
 
     ; Add task input field
     currentY := 100
@@ -500,9 +500,7 @@ ShowLogseqAddGUI(clipText := "") {
     contextDisplayOrder := []  ; Track which context each checkbox represents
     global contextShortcutMap := Map()  ; Map letter shortcuts to context indices
     usedLetters := Map()  ; Track which letters are already used
-    usedLetters["t"] := true  ; Reserved for TODO
-    usedLetters["w"] := true  ; Reserved for WAITING
-    usedLetters["d"] := true  ; Reserved for DOING
+    ; No letters reserved — status uses numbers now, all letters available for contexts
     globalContextIndex := 1
 
     ; Starting positions
@@ -585,7 +583,7 @@ ShowLogseqAddGUI(clipText := "") {
     buttonY += 35
     taskGui.Add("Text", "x10 y" . buttonY . " w" . guiWidth, "Shortcuts (when NOT typing in text field):")
     buttonY += 20
-    taskGui.Add("Text", "x10 y" . buttonY . " w" . guiWidth, "Status: T=TODO, W=WAITING, D=DOING, |=None")
+    taskGui.Add("Text", "x10 y" . buttonY . " w" . guiWidth, "Status: |/0=None, 1=TODO, 2=WAITING, 3=DOING")
     buttonY += 15
     taskGui.Add("Text", "x10 y" . buttonY . " w" . guiWidth, "Context: Letter=cycle top-level, then letter=pick sub-context")
 
@@ -653,8 +651,8 @@ HandleChar(wParam, lParam, msg, hwnd) {
         return 0
     }
 
-    ; === PIPE | = None status ===
-    if (charLower = "|") {
+    ; === PIPE | or 0 = None status ===
+    if (charLower = "|" || charLower = "0") {
         taskGui["NoneCheck"].Value := 1
         taskGui["TodoCheck"].Value := 0
         taskGui["WaitingCheck"].Value := 0
@@ -662,28 +660,27 @@ HandleChar(wParam, lParam, msg, hwnd) {
         return 0
     }
 
-    ; === STATUS SHORTCUTS ===
-    Switch charLower {
-        case "t":
-            taskGui["NoneCheck"].Value := 0
-            taskGui["TodoCheck"].Value := 1
-            taskGui["WaitingCheck"].Value := 0
-            taskGui["DoingCheck"].Value := 0
-            return 0
-
-        case "w":
-            taskGui["NoneCheck"].Value := 0
-            taskGui["TodoCheck"].Value := 0
-            taskGui["WaitingCheck"].Value := 1
-            taskGui["DoingCheck"].Value := 0
-            return 0
-
-        case "d":
-            taskGui["NoneCheck"].Value := 0
-            taskGui["TodoCheck"].Value := 0
-            taskGui["WaitingCheck"].Value := 0
-            taskGui["DoingCheck"].Value := 1
-            return 0
+    ; === NUMBER STATUS SHORTCUTS: 1=TODO, 2=WAITING, 3=DOING ===
+    if (charLower = "1") {
+        taskGui["NoneCheck"].Value := 0
+        taskGui["TodoCheck"].Value := 1
+        taskGui["WaitingCheck"].Value := 0
+        taskGui["DoingCheck"].Value := 0
+        return 0
+    }
+    if (charLower = "2") {
+        taskGui["NoneCheck"].Value := 0
+        taskGui["TodoCheck"].Value := 0
+        taskGui["WaitingCheck"].Value := 1
+        taskGui["DoingCheck"].Value := 0
+        return 0
+    }
+    if (charLower = "3") {
+        taskGui["NoneCheck"].Value := 0
+        taskGui["TodoCheck"].Value := 0
+        taskGui["WaitingCheck"].Value := 0
+        taskGui["DoingCheck"].Value := 1
+        return 0
     }
 
     ; === CONTEXT SELECTION (letter-based with cycling and parent→child) ===
@@ -764,16 +761,6 @@ HandleChar(wParam, lParam, msg, hwnd) {
             selectedTopLevel := (!InStr(ctxName, "/")) ? ctxName : ""
             return 0
         }
-    }
-
-    ; === NUMBER KEYS (0-9) still work for direct context selection ===
-    if (charLower ~= "^[0-9]$") {
-        ClearAllContexts()
-        contextIndex := (char = "0") ? 10 : Integer(char)
-        if (contextIndex <= contextDisplayOrder.Length) {
-            SelectContextByIndex(contextIndex)
-        }
-        return 0
     }
 }
 
@@ -867,10 +854,9 @@ ShowAbout(*) {
     aboutText .= "3. Optionally select a context`n"
     aboutText .= "4. Click Submit to add to journal`n`n"
     aboutText .= "KEYBOARD SHORTCUTS (when not typing):`n"
-    aboutText .= "T = TODO, W = WAITING, D = DOING, | = None (no status)`n"
+    aboutText .= "|/0 = None (no status), 1 = TODO, 2 = WAITING, 3 = DOING`n"
     aboutText .= "Letters = Cycle through top-level contexts starting with that letter`n"
-    aboutText .= "  → Then press another letter to pick a sub-context`n"
-    aboutText .= "0-9 = Direct context selection (first 10)`n`n"
+    aboutText .= "  → Then press another letter to pick a sub-context`n`n"
     aboutText .= "MULTILINE SUPPORT:`n"
     aboutText .= "First line becomes the task, remaining lines become sub-blocks`n`n"
     aboutText .= "SAVE METHOD:`n"
