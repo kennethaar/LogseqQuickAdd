@@ -10,9 +10,11 @@
 ;                       Improved two-column layout
 ;                       Fixed context mapping bug
 ;                       Fixed number key shortcuts for context selection
+;                       Added Logseq API support with FileAppend fallback
+;                       API always preferred; file fallback with warning
 ;
 ;------------------------------------------------------------------------------
-;SETTINGSa
+;SETTINGS
 ;------------------------------------------------------------------------------
 #Requires AutoHotkey v2.0+
 #SingleInstance force
@@ -21,7 +23,7 @@
 ; Global Variables - Must be declared first
 ;------------------------------------------------------------------------------
 global VarScriptName := "LogseqQuickAdd"
-global VarVersionNo := "v018"
+global VarVersionNo := "v020"
 global Varblurb := "`nPress SHIFT+CTRL+L to add`nyour clipboard as task to Logseq"
 global customDir := ""
 global contextNamespace := ""
@@ -31,6 +33,7 @@ global taskInputHwnd := 0  ; Store the hwnd of the task input control
 global contextCheckboxes := []  ; Array to store checkbox controls
 global contextDisplayOrder := []  ; Array to store contexts in the order they appear in GUI
 global iniPath := A_ScriptDir "\" VarScriptName ".ini"
+global logseqApiToken := ""
 
 ;------------------------------------------------------------------------------
 ; Helper Functions - Define before using them
@@ -157,7 +160,7 @@ FindAvailableLetter(contextName, usedLetters) {
         parts := StrSplit(contextName, "/")
         nameToCheck := parts[parts.Length]  ; Get last part (e.g., "Read" from "Consume/Read")
     }
-    
+
     ; Try each letter in the name
     Loop StrLen(nameToCheck) {
         letter := StrLower(SubStr(nameToCheck, A_Index, 1))
@@ -166,7 +169,7 @@ FindAvailableLetter(contextName, usedLetters) {
             return letter
         }
     }
-    
+
     ; If nested and no letter found, also try the parent parts
     if (InStr(contextName, "/")) {
         parts := StrSplit(contextName, "/")
@@ -180,18 +183,18 @@ FindAvailableLetter(contextName, usedLetters) {
             }
         }
     }
-    
+
     ; Fallback: try all letters in the alphabet (including Norwegian)
     allLetters := "abcefghijklmnopqrsuvxyz"  ; Excluding t, w, d (reserved for status)
     allLetters .= "æøå"  ; Add Norwegian letters
-    
+
     Loop StrLen(allLetters) {
         letter := SubStr(allLetters, A_Index, 1)
         if (!usedLetters.Has(letter)) {
             return letter
         }
     }
-    
+
     ; No available letter found
     return ""
 }
@@ -234,9 +237,94 @@ ProcessMultilineText(taskText, statusPrefix, contextSuffix) {
     }
 }
 
+; Function to get current journal page name
+GetTodayJournalPage() {
+    ; Logseq journal page format: YYYYMMDD (e.g., 20260213)
+    return A_YYYY . A_MM . A_DD
+}
+
+; Function to call Logseq API to append block
+CallLogseqApi(content, pageName) {
+    global logseqApiToken
+
+    ; Prepare the API request
+    url := "http://127.0.0.1:12315/api"
+
+    ; Escape quotes in content for JSON
+    escapedContent := StrReplace(content, '"', '\"')
+    escapedContent := StrReplace(escapedContent, "`n", "\n")
+    escapedContent := StrReplace(escapedContent, "`r", "")
+
+    ; Build JSON payload for append_block_in_page method
+    jsonPayload := '{"method":"logseq.Editor.appendBlockInPage","args":["' . pageName . '","' . escapedContent . '"]}'
+
+    ; Create HTTP request
+    try {
+        whr := ComObject("WinHttp.WinHttpRequest.5.1")
+        whr.Open("POST", url, false)
+        whr.SetRequestHeader("Content-Type", "application/json")
+        whr.SetRequestHeader("Authorization", "Bearer " . logseqApiToken)
+        whr.Send(jsonPayload)
+
+        ; Check response
+        if (whr.Status = 200) {
+            return {success: true, message: "Task added via API"}
+        } else {
+            return {success: false, message: "API returned status " . whr.Status . ": " . whr.ResponseText}
+        }
+    } catch as err {
+        return {success: false, message: "API call failed: " . err.Message}
+    }
+}
+
+; Function to save task using file method (fallback)
+SaveTaskToFile(processedTask) {
+    global customDir, VarScriptName
+
+    ; Path to Logseq Journals folder
+    CaptureFilePath := customDir "\" A_YYYY "_" A_MM "_" A_DD ".md"
+
+    ; Check if file exists and what its last line contains
+    fileExistsAlready := FileExist(CaptureFilePath)
+    shouldAddNewline := true
+
+    if (fileExistsAlready) {
+        ; Read the last few characters to check how the file ends
+        Try {
+            fileContent := FileRead(CaptureFilePath)
+            if (fileContent != "") {
+                ; If file ends with a newline, we're good to go
+                if (SubStr(fileContent, -1) == "`n") {
+                    shouldAddNewline := false
+                }
+            }
+        } Catch {
+            ; If we can't read the file, just be safe and add a newline
+            shouldAddNewline := true
+        }
+    }
+
+    ; Prepare the text to append
+    finalText := ""
+    if (shouldAddNewline) {
+        finalText := "`n" . processedTask . "`n- " . "`n"
+    } else {
+        finalText := processedTask . "`n- " . "`n"
+    }
+
+    ; Append to file
+    Try {
+        FileAppend(finalText, CaptureFilePath)
+        return {success: true, message: "Task added to file: " . CaptureFilePath}
+    } Catch as err {
+        return {success: false, message: "Error writing to file: " . CaptureFilePath . "`n`nError: " . err.Message}
+    }
+}
+
 ; Function to save task to Logseq journal
 SaveTask(openLogseq := false) {
     global taskGui, customDir, contextNamespace, contextDisplayOrder, iniPath, VarScriptName, VarVersionNo
+    global logseqApiToken
 
     ; Double-check that we have the path from INI
     if (customDir = "") {
@@ -284,52 +372,46 @@ SaveTask(openLogseq := false) {
     ; Process multiline text (context is added inside this function)
     processedTask := ProcessMultilineText(taskText, statusPrefix, contextSuffix)
 
-    ; Combine everything
-    finalText := processedTask . "`n- " . "`n"
+    ; --- Save method: Always prefer API, fall back to file with warning ---
+    result := {success: false, message: ""}
+    methodUsed := ""
 
-    ; Path to Logseq Journals folder
-    CaptureFilePath := customDir "\" A_YYYY "_" A_MM "_" A_DD ".md"
+    if (logseqApiToken != "") {
+        ; API token is set — always try API first
+        pageName := GetTodayJournalPage()
+        result := CallLogseqApi(processedTask, pageName)
 
-    ; Check if file exists and what its last line contains
-    fileExistsAlready := FileExist(CaptureFilePath)
-    shouldAddNewline := true
-
-    if (fileExistsAlready) {
-        ; Read the last few characters to check how the file ends
-        Try {
-            fileContent := FileRead(CaptureFilePath)
-            if (fileContent != "") {
-                ; If file ends with a newline, we're good to go
-                if (SubStr(fileContent, -1) == "`n") {
-                    shouldAddNewline := false
-                }
+        if (result.success) {
+            methodUsed := "API"
+        } else {
+            ; API failed — warn user and fall back to file method
+            apiWarning := "⚠ API unavailable: " . result.message . "`nFalling back to file method..."
+            TrayTip apiWarning, VarScriptName " " VarVersionNo, 2  ; Icon 2 = Warning
+            Sleep 1500  ; Give user time to see the warning
+            result := SaveTaskToFile(processedTask)
+            if (result.success) {
+                methodUsed := "File (API fallback)"
             }
-        } Catch {
-            ; If we can't read the file, just be safe and add a newline
-            shouldAddNewline := true
         }
-    }
-
-    ; Prepare the text to append
-    if (shouldAddNewline) {
-        finalText := "`n" . processedTask . "`n"
     } else {
-        finalText := processedTask . "`n"
+        ; No API token configured — warn and use file method
+        TrayTip "⚠ No API token set — using file method.`nSet token via tray menu for API support.", VarScriptName " " VarVersionNo, 2
+        Sleep 1000
+        result := SaveTaskToFile(processedTask)
+        if (result.success) {
+            methodUsed := "File (no API token)"
+        }
     }
 
-    ; Append to file
-    Try {
-        FileAppend(finalText, CaptureFilePath)
-
-        ; Create detailed confirmation message with path
-        confirmMsg := "Task added to:`n" . CaptureFilePath
+    ; Show result to user
+    if (result.success) {
+        confirmMsg := "Task added (" . methodUsed . ")"
         if (contextName != "") {
-            confirmMsg .= "`n`nContext: " . contextName
+            confirmMsg .= "`nContext: " . contextName
         }
-
         TrayTip confirmMsg, VarScriptName " " VarVersionNo, 1
-    } Catch as err {
-        MsgBox "Error writing to file: " CaptureFilePath "`n`nError: " err.Message "`n`nMake sure the path exists and is writable.", "Error - " VarScriptName
+    } else {
+        MsgBox result.message, "Error - " VarScriptName
     }
 
     ; Destroy the GUI
@@ -372,9 +454,6 @@ ShowLogseqAddGUI(clipText := "") {
 
     ; Organize contexts into groups
     contextGroups := OrganizeContexts(contextList)
-
-    ; Debug: Show what was found (can be removed later)
-    ; MsgBox "Top-level: " . contextGroups.topLevel.Length . "`nNested: " . contextGroups.nested.Length
 
     ; Calculate GUI dimensions - always 2 columns now
     columnWidth := 280
@@ -639,9 +718,32 @@ ResetContextNamespace(*) {
     }
 }
 
+; Tray menu handler for API Token
+SetApiToken(*) {
+    global logseqApiToken, iniPath, VarScriptName, VarVersionNo
+
+    currentToken := (logseqApiToken != "") ? "****" . SubStr(logseqApiToken, -4) : "(not set)"
+
+    instructionText := "To get your API token:`n"
+    instructionText .= "1. Open Logseq`n"
+    instructionText .= "2. Go to Settings > Features`n"
+    instructionText .= "3. Enable 'HTTP APIs server'`n"
+    instructionText .= "4. Click 'Auth token' to copy it`n`n"
+    instructionText .= "Current token: " . currentToken . "`n`n"
+    instructionText .= "Enter your Logseq API token below:"
+
+    ib := InputBox(instructionText, VarScriptName " - API Token", "w400 h300", "")
+
+    if (ib.Result = "OK" && ib.Value != "") {
+        logseqApiToken := Trim(ib.Value)
+        IniWrite(logseqApiToken, iniPath, "General", "ApiToken")
+        TrayTip "API token updated", VarScriptName " " VarVersionNo, 1
+    }
+}
+
 ; Tray menu handler for About
 ShowAbout(*) {
-    global customDir, contextNamespace, contextList, VarScriptName, VarVersionNo
+    global customDir, contextNamespace, contextList, VarScriptName, VarVersionNo, logseqApiToken
 
     aboutText := VarScriptName . " " . VarVersionNo . "`n`n"
     aboutText .= "HOW TO USE:`n"
@@ -655,10 +757,14 @@ ShowAbout(*) {
     aboutText .= "Letters = Additional contexts (shown in parentheses)`n`n"
     aboutText .= "MULTILINE SUPPORT:`n"
     aboutText .= "First line becomes the task, remaining lines become sub-blocks`n`n"
+    aboutText .= "SAVE METHOD:`n"
+    aboutText .= "API is always preferred. If API is unavailable, the script`n"
+    aboutText .= "falls back to direct file writing with a warning notification.`n`n"
     aboutText .= "CURRENT SETTINGS:`n"
     aboutText .= "Journal Path: " . customDir . "`n"
     aboutText .= "Context Namespace: " . contextNamespace . "`n"
     aboutText .= "Contexts Found: " . contextList.Length . "`n"
+    aboutText .= "API Token: " . (logseqApiToken != "" ? "Set" : "Not set") . "`n"
 
     MsgBox aboutText, "About " . VarScriptName, 64
 }
@@ -679,7 +785,8 @@ Catch
 A_TrayMenu.Insert("1&", "About " . VarScriptName, ShowAbout)
 A_TrayMenu.Insert("2&", "Reset Logseq Path", ResetLogseqPath)
 A_TrayMenu.Insert("3&", "Reset Context Namespace", ResetContextNamespace)
-A_TrayMenu.Insert("4&")  ; Separator
+A_TrayMenu.Insert("4&", "Set API Token", SetApiToken)
+A_TrayMenu.Insert("5&")  ; Separator
 
 ;------------------------------------------------------------------------------
 ; Check if INI file exists with path to folder
@@ -712,12 +819,53 @@ if !IniRead(iniPath, "General", "ContextNamespace", 0)
 }
 contextNamespace := IniRead(iniPath, "General", "ContextNamespace")
 
+; Check if API token is configured
+if !IniRead(iniPath, "General", "ApiToken", 0)
+{
+    instructionText := "Logseq API Integration (Recommended)`n`n"
+    instructionText .= "This script always prefers the Logseq HTTP API for adding tasks.`n"
+    instructionText .= "If API is unavailable, it will fall back to direct file writing`n"
+    instructionText .= "and show a warning notification.`n`n"
+    instructionText .= "To enable API:`n"
+    instructionText .= "1. Open Logseq`n"
+    instructionText .= "2. Go to Settings > Features`n"
+    instructionText .= "3. Enable 'HTTP APIs server'`n"
+    instructionText .= "4. Click 'Auth token' to copy it`n`n"
+    instructionText .= "Do you want to set up the API token now?"
+
+    result := MsgBox(instructionText, VarScriptName " - API Setup", "YesNo Icon?")
+
+    if (result = "Yes") {
+        ib := InputBox("Paste your Logseq API token:", VarScriptName " - API Token", "w400 h150", "")
+
+        if (ib.Result = "OK" && ib.Value != "") {
+            logseqApiToken := Trim(ib.Value)
+            IniWrite(logseqApiToken, iniPath, "General", "ApiToken")
+        } else {
+            IniWrite("", iniPath, "General", "ApiToken")
+        }
+    } else {
+        IniWrite("", iniPath, "General", "ApiToken")
+    }
+} else {
+    logseqApiToken := IniRead(iniPath, "General", "ApiToken")
+}
+
 ; Scan for contexts on startup
 ScanContextsInNamespace()
 
 ; Show welcome message
-If IniRead(iniPath, "General", "CustomPath", 0)
-    TrayTip "Capturing to: " customDir "`nNamespace: " contextNamespace "`nContexts found: " contextList.Length "`n`nCapture to Logseq by pressing CTRL+Shift+L", VarScriptName " " VarVersionNo
+If IniRead(iniPath, "General", "CustomPath", 0) {
+    welcomeMsg := "Capturing to: " . customDir . "`nNamespace: " . contextNamespace . "`nContexts found: " . contextList.Length
+    if (logseqApiToken != "") {
+        welcomeMsg .= "`nMethod: API (file fallback if unavailable)"
+    } else {
+        welcomeMsg .= "`n⚠ No API token — using file method only"
+    }
+    welcomeMsg .= "`n`nCapture to Logseq by pressing CTRL+Shift+L"
+
+    TrayTip welcomeMsg, VarScriptName " " VarVersionNo
+}
 
 ;------------------------------------------------------------------------------
 ; Hotkeys
