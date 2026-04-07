@@ -39,6 +39,9 @@ global cycleKey := ""          ; Track which letter key is being cycled
 global cycleIndex := 0         ; Current position in the cycle
 global cycleTimer := 0         ; Timer handle for cycle reset
 global selectedTopLevel := ""  ; Currently selected top-level context (for parent→child nav)
+global targetMode := "Logseq"          ; "Logseq" or "NeovimLog"
+global nvimServerAddress := ""         ; Neovim RPC pipe address (e.g. \\.\pipe\nvim)
+global targetSubMenu := ""            ; Tray submenu for target selection
 
 ;------------------------------------------------------------------------------
 ; Helper Functions - Define before using them
@@ -282,6 +285,46 @@ CallLogseqApi(content, pageName) {
     }
 }
 
+; Function to call Neovim RPC to append task via external.lua
+CallNeovimRpc(taskText, statusKeyword, contextPath) {
+    global nvimServerAddress
+
+    ; Escape special characters for JSON string
+    escapedText := StrReplace(taskText, "\", "\\")
+    escapedText := StrReplace(escapedText, '"', '\"')
+    escapedText := StrReplace(escapedText, "`n", "\n")
+    escapedText := StrReplace(escapedText, "`r", "")
+
+    escapedContext := StrReplace(contextPath, "\", "\\")
+    escapedContext := StrReplace(escapedContext, '"', '\"')
+
+    ; Build JSON payload for the Lua function
+    jsonPayload := '{\"text\":\"' . escapedText . '\",\"status\":\"' . statusKeyword . '\",\"context\":\"' . escapedContext . '\"}'
+
+    ; Build the nvim command - luaeval calls require('logseq.external').add_task(json)
+    luaExpr := "luaeval(""require('logseq.external').add_task('" . jsonPayload . "')"")"
+    nvimCmd := 'nvim --server "' . nvimServerAddress . '" --remote-expr "' . luaExpr . '"'
+
+    try {
+        shell := ComObject("WScript.Shell")
+        exec := shell.Exec('cmd /c ' . nvimCmd)
+        output := Trim(exec.StdOut.ReadAll())
+        errOutput := Trim(exec.StdErr.ReadAll())
+
+        if (output = "ok") {
+            return {success: true, message: "Task added via Neovim RPC"}
+        } else if (output != "") {
+            return {success: false, message: "Neovim returned: " . output}
+        } else if (errOutput != "") {
+            return {success: false, message: "Neovim error: " . errOutput}
+        } else {
+            return {success: false, message: "No response from Neovim. Is it running with --listen " . nvimServerAddress . "?"}
+        }
+    } catch as err {
+        return {success: false, message: "Neovim RPC failed: " . err.Message . "`n`nMake sure Neovim is running with:`nnvim --listen " . nvimServerAddress}
+    }
+}
+
 ; Function to save task using file method (fallback)
 SaveTaskToFile(processedTask) {
     global customDir, VarScriptName
@@ -375,37 +418,58 @@ SaveTask(openLogseq := false) {
         }
     }
 
-    ; Process multiline text (context is added inside this function)
-    processedTask := ProcessMultilineText(taskText, statusPrefix, contextSuffix)
-
-    ; --- Save method: Always prefer API, fall back to file with warning ---
+    ; --- Save method: branch on target mode ---
     result := {success: false, message: ""}
     methodUsed := ""
 
-    if (logseqApiToken != "") {
-        ; API token is set — always try API first
-        pageName := GetTodayJournalPage()
-        result := CallLogseqApi(processedTask, pageName)
+    if (targetMode = "NeovimLog") {
+        ; Determine status keyword for Neovim RPC (without "- " prefix)
+        statusKeyword := ""
+        if (savedValues.TodoCheck)
+            statusKeyword := "TODO"
+        else if (savedValues.WaitingCheck)
+            statusKeyword := "WAITING"
+        else if (savedValues.DoingCheck)
+            statusKeyword := "DOING"
 
+        ; Build full context path for Neovim
+        contextPath := ""
+        if (contextName != "")
+            contextPath := contextNamespace . "/" . contextName
+
+        result := CallNeovimRpc(taskText, statusKeyword, contextPath)
         if (result.success) {
-            methodUsed := "API"
-        } else {
-            ; API failed — warn user and fall back to file method
-            apiWarning := "⚠ API unavailable: " . result.message . "`nFalling back to file method..."
-            TrayTip apiWarning, VarScriptName " " VarVersionNo, 2  ; Icon 2 = Warning
-            Sleep 1500  ; Give user time to see the warning
-            result := SaveTaskToFile(processedTask)
-            if (result.success) {
-                methodUsed := "File (API fallback)"
-            }
+            methodUsed := "Neovim RPC"
         }
     } else {
-        ; No API token configured — warn and use file method
-        TrayTip "⚠ No API token set — using file method.`nSet token via tray menu for API support.", VarScriptName " " VarVersionNo, 2
-        Sleep 1000
-        result := SaveTaskToFile(processedTask)
-        if (result.success) {
-            methodUsed := "File (no API token)"
+        ; --- Logseq target: existing API / file fallback logic ---
+        processedTask := ProcessMultilineText(taskText, statusPrefix, contextSuffix)
+
+        if (logseqApiToken != "") {
+            ; API token is set — always try API first
+            pageName := GetTodayJournalPage()
+            result := CallLogseqApi(processedTask, pageName)
+
+            if (result.success) {
+                methodUsed := "API"
+            } else {
+                ; API failed — warn user and fall back to file method
+                apiWarning := "⚠ API unavailable: " . result.message . "`nFalling back to file method..."
+                TrayTip apiWarning, VarScriptName " " VarVersionNo, 2  ; Icon 2 = Warning
+                Sleep 1500  ; Give user time to see the warning
+                result := SaveTaskToFile(processedTask)
+                if (result.success) {
+                    methodUsed := "File (API fallback)"
+                }
+            }
+        } else {
+            ; No API token configured — warn and use file method
+            TrayTip "⚠ No API token set — using file method.`nSet token via tray menu for API support.", VarScriptName " " VarVersionNo, 2
+            Sleep 1000
+            result := SaveTaskToFile(processedTask)
+            if (result.success) {
+                methodUsed := "File (no API token)"
+            }
         }
     }
 
@@ -470,7 +534,7 @@ ShowLogseqAddGUI(clipText := "") {
     contextGroupHeight := 80 + (maxRows * 25)
 
     ; Create the GUI
-    taskGui := Gui("+AlwaysOnTop", VarScriptName " " VarVersionNo)
+    taskGui := Gui("+AlwaysOnTop", VarScriptName " " VarVersionNo " [" . targetMode . "]")
 
     ; Add status checkboxes
     taskGui.Add("Text", "x10 y10 w" . guiWidth, "Task Status:")
@@ -825,6 +889,45 @@ SetApiToken(*) {
     }
 }
 
+; Tray menu handlers for Target switching
+SwitchToLogseq(*) {
+    global targetMode, iniPath, VarScriptName, VarVersionNo, targetSubMenu
+    targetMode := "Logseq"
+    IniWrite(targetMode, iniPath, "General", "Target")
+    targetSubMenu.Check("Logseq")
+    targetSubMenu.Uncheck("NeovimLog")
+    TrayTip "Target set to Logseq", VarScriptName " " VarVersionNo, 1
+}
+
+SwitchToNeovimLog(*) {
+    global targetMode, iniPath, VarScriptName, VarVersionNo, targetSubMenu
+    targetMode := "NeovimLog"
+    IniWrite(targetMode, iniPath, "General", "Target")
+    targetSubMenu.Uncheck("Logseq")
+    targetSubMenu.Check("NeovimLog")
+    TrayTip "Target set to NeovimLog", VarScriptName " " VarVersionNo, 1
+}
+
+; Tray menu handler for Neovim Server Address
+SetNvimServerAddress(*) {
+    global nvimServerAddress, iniPath, VarScriptName, VarVersionNo
+
+    currentAddr := (nvimServerAddress != "") ? nvimServerAddress : "(not set)"
+
+    instructionText := "Neovim must be running with --listen to receive tasks.`n`n"
+    instructionText .= "Example: nvim --listen \\.\pipe\nvim`n`n"
+    instructionText .= "Current address: " . currentAddr . "`n`n"
+    instructionText .= "Enter the Neovim server pipe address:"
+
+    ib := InputBox(instructionText, VarScriptName " - Neovim Server", "w400 h250", nvimServerAddress)
+
+    if (ib.Result = "OK" && ib.Value != "") {
+        nvimServerAddress := Trim(ib.Value)
+        IniWrite(nvimServerAddress, iniPath, "General", "NvimServerAddress")
+        TrayTip "Neovim server address updated to:`n" . nvimServerAddress, VarScriptName " " VarVersionNo, 1
+    }
+}
+
 ; Tray menu handler for About
 ShowAbout(*) {
     global customDir, contextNamespace, contextList, VarScriptName, VarVersionNo, logseqApiToken
@@ -845,10 +948,12 @@ ShowAbout(*) {
     aboutText .= "API is always preferred. If API is unavailable, the script`n"
     aboutText .= "falls back to direct file writing with a warning notification.`n`n"
     aboutText .= "CURRENT SETTINGS:`n"
+    aboutText .= "Target: " . targetMode . "`n"
     aboutText .= "Journal Path: " . customDir . "`n"
     aboutText .= "Context Namespace: " . contextNamespace . "`n"
     aboutText .= "Contexts Found: " . contextList.Length . "`n"
     aboutText .= "API Token: " . (logseqApiToken != "" ? "Set" : "Not set") . "`n"
+    aboutText .= "Neovim Server: " . (nvimServerAddress != "" ? nvimServerAddress : "(not set)") . "`n"
 
     MsgBox aboutText, "About " . VarScriptName, 64
 }
@@ -866,11 +971,17 @@ Catch
 ;------------------------------------------------------------------------------
 ; Setup Tray Menu
 ;------------------------------------------------------------------------------
+targetSubMenu := Menu()
+targetSubMenu.Add("Logseq", SwitchToLogseq)
+targetSubMenu.Add("NeovimLog", SwitchToNeovimLog)
+
 A_TrayMenu.Insert("1&", "About " . VarScriptName, ShowAbout)
-A_TrayMenu.Insert("2&", "Reset Logseq Path", ResetLogseqPath)
-A_TrayMenu.Insert("3&", "Reset Context Namespace", ResetContextNamespace)
-A_TrayMenu.Insert("4&", "Set API Token", SetApiToken)
-A_TrayMenu.Insert("5&")  ; Separator
+A_TrayMenu.Insert("2&", "Target", targetSubMenu)
+A_TrayMenu.Insert("3&", "Set Neovim Server Address", SetNvimServerAddress)
+A_TrayMenu.Insert("4&", "Reset Logseq Path", ResetLogseqPath)
+A_TrayMenu.Insert("5&", "Reset Context Namespace", ResetContextNamespace)
+A_TrayMenu.Insert("6&", "Set API Token", SetApiToken)
+A_TrayMenu.Insert("7&")  ; Separator
 
 ;------------------------------------------------------------------------------
 ; Check if INI file exists with path to folder
@@ -935,18 +1046,31 @@ if !IniRead(iniPath, "General", "ApiToken", 0)
     logseqApiToken := IniRead(iniPath, "General", "ApiToken")
 }
 
+; Read target mode and Neovim server address
+targetMode := IniRead(iniPath, "General", "Target", "Logseq")
+nvimServerAddress := IniRead(iniPath, "General", "NvimServerAddress", "\\.\pipe\nvim")
+
+; Set checkmark on the active target in the tray submenu
+if (targetMode = "NeovimLog") {
+    targetSubMenu.Check("NeovimLog")
+} else {
+    targetSubMenu.Check("Logseq")
+}
+
 ; Scan for contexts on startup
 ScanContextsInNamespace()
 
 ; Show welcome message
 If IniRead(iniPath, "General", "CustomPath", 0) {
-    welcomeMsg := "Capturing to: " . customDir . "`nNamespace: " . contextNamespace . "`nContexts found: " . contextList.Length
-    if (logseqApiToken != "") {
+    welcomeMsg := "Target: " . targetMode . "`nCapturing to: " . customDir . "`nNamespace: " . contextNamespace . "`nContexts found: " . contextList.Length
+    if (targetMode = "NeovimLog") {
+        welcomeMsg .= "`nNeovim server: " . nvimServerAddress
+    } else if (logseqApiToken != "") {
         welcomeMsg .= "`nMethod: API (file fallback if unavailable)"
     } else {
         welcomeMsg .= "`n⚠ No API token — using file method only"
     }
-    welcomeMsg .= "`n`nCapture to Logseq by pressing CTRL+Shift+L"
+    welcomeMsg .= "`n`nCapture by pressing CTRL+Shift+L"
 
     TrayTip welcomeMsg, VarScriptName " " VarVersionNo
 }
