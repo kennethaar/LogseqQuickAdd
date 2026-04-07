@@ -285,28 +285,32 @@ CallLogseqApi(content, pageName) {
 }
 
 ; Function to call Neovim RPC to append task via external.lua
+; Uses a temp file for the JSON payload to avoid command-line escaping issues.
 CallNeovimRpc(taskText, statusKeyword, contextPath) {
     global nvimServerAddress
 
-    ; Escape special characters for JSON string
+    ; Escape special characters for JSON string values
     escapedText := StrReplace(taskText, "\", "\\")
     escapedText := StrReplace(escapedText, '"', '\"')
     escapedText := StrReplace(escapedText, "`n", "\n")
     escapedText := StrReplace(escapedText, "`r", "")
+    escapedText := StrReplace(escapedText, "`t", "\t")
 
     escapedContext := StrReplace(contextPath, "\", "\\")
     escapedContext := StrReplace(escapedContext, '"', '\"')
 
-    ; Build JSON payload for the Lua function
-    jsonPayload := '{\"text\":\"' . escapedText . '\",\"status\":\"' . statusKeyword . '\",\"context\":\"' . escapedContext . '\"}'
+    ; Write JSON to temp file (avoids nested quote escaping in cmd line)
+    jsonContent := '{"text":"' . escapedText . '","status":"' . statusKeyword . '","context":"' . escapedContext . '"}'
+    tempFile := A_Temp . "\logseq_quickadd_task.json"
+    try FileDelete tempFile
+    FileAppend jsonContent, tempFile, "UTF-8"
 
-    ; Build the nvim command - luaeval calls require('logseq.external').add_task(json)
-    luaExpr := "luaeval(""require('logseq.external').add_task('" . jsonPayload . "')"")"
-    nvimCmd := 'nvim --server "' . nvimServerAddress . '" --remote-expr "' . luaExpr . '"'
+    ; Call nvim directly (no cmd /c) with simple --remote-expr
+    nvimCmd := 'nvim --server "' . nvimServerAddress . '" --remote-expr "luaeval(\"require(''logseq.external'').add_task_from_file()\")"'
 
     try {
         shell := ComObject("WScript.Shell")
-        exec := shell.Exec('cmd /c ' . nvimCmd)
+        exec := shell.Exec(nvimCmd)
         output := Trim(exec.StdOut.ReadAll())
         errOutput := Trim(exec.StdErr.ReadAll())
 
