@@ -41,7 +41,6 @@ global cycleTimer := 0         ; Timer handle for cycle reset
 global selectedTopLevel := ""  ; Currently selected top-level context (for parent→child nav)
 global targetMode := "Logseq"          ; "Logseq" or "NeovimLog"
 global nvimServerAddress := ""         ; Neovim RPC pipe address (e.g. \\.\pipe\nvim)
-global targetSubMenu := ""            ; Tray submenu for target selection
 
 ;------------------------------------------------------------------------------
 ; Helper Functions - Define before using them
@@ -891,20 +890,20 @@ SetApiToken(*) {
 
 ; Tray menu handlers for Target switching
 SwitchToLogseq(*) {
-    global targetMode, iniPath, VarScriptName, VarVersionNo, targetSubMenu
+    global targetMode, iniPath, VarScriptName, VarVersionNo
     targetMode := "Logseq"
     IniWrite(targetMode, iniPath, "General", "Target")
-    targetSubMenu.Check("Logseq")
-    targetSubMenu.Uncheck("NeovimLog")
+    A_TrayMenu.Check("Target: Logseq")
+    A_TrayMenu.Uncheck("Target: NeovimLog")
     TrayTip "Target set to Logseq", VarScriptName " " VarVersionNo, 1
 }
 
 SwitchToNeovimLog(*) {
-    global targetMode, iniPath, VarScriptName, VarVersionNo, targetSubMenu
+    global targetMode, iniPath, VarScriptName, VarVersionNo
     targetMode := "NeovimLog"
     IniWrite(targetMode, iniPath, "General", "Target")
-    targetSubMenu.Uncheck("Logseq")
-    targetSubMenu.Check("NeovimLog")
+    A_TrayMenu.Uncheck("Target: Logseq")
+    A_TrayMenu.Check("Target: NeovimLog")
     TrayTip "Target set to NeovimLog", VarScriptName " " VarVersionNo, 1
 }
 
@@ -971,17 +970,14 @@ Catch
 ;------------------------------------------------------------------------------
 ; Setup Tray Menu
 ;------------------------------------------------------------------------------
-targetSubMenu := Menu()
-targetSubMenu.Add("Logseq", SwitchToLogseq)
-targetSubMenu.Add("NeovimLog", SwitchToNeovimLog)
-
 A_TrayMenu.Insert("1&", "About " . VarScriptName, ShowAbout)
-A_TrayMenu.Insert("2&", "Target", targetSubMenu)
-A_TrayMenu.Insert("3&", "Set Neovim Server Address", SetNvimServerAddress)
-A_TrayMenu.Insert("4&", "Reset Logseq Path", ResetLogseqPath)
-A_TrayMenu.Insert("5&", "Reset Context Namespace", ResetContextNamespace)
-A_TrayMenu.Insert("6&", "Set API Token", SetApiToken)
-A_TrayMenu.Insert("7&")  ; Separator
+A_TrayMenu.Insert("2&", "Target: Logseq", SwitchToLogseq)
+A_TrayMenu.Insert("3&", "Target: NeovimLog", SwitchToNeovimLog)
+A_TrayMenu.Insert("4&", "Set Neovim Server Address", SetNvimServerAddress)
+A_TrayMenu.Insert("5&", "Reset Logseq Path", ResetLogseqPath)
+A_TrayMenu.Insert("6&", "Reset Context Namespace", ResetContextNamespace)
+A_TrayMenu.Insert("7&", "Set API Token", SetApiToken)
+A_TrayMenu.Insert("8&")  ; Separator
 
 ;------------------------------------------------------------------------------
 ; Check if INI file exists with path to folder
@@ -1050,11 +1046,11 @@ if !IniRead(iniPath, "General", "ApiToken", 0)
 targetMode := IniRead(iniPath, "General", "Target", "Logseq")
 nvimServerAddress := IniRead(iniPath, "General", "NvimServerAddress", "\\.\pipe\nvim")
 
-; Set checkmark on the active target in the tray submenu
+; Set checkmark on the active target in the tray menu
 if (targetMode = "NeovimLog") {
-    targetSubMenu.Check("NeovimLog")
+    A_TrayMenu.Check("Target: NeovimLog")
 } else {
-    targetSubMenu.Check("Logseq")
+    A_TrayMenu.Check("Target: Logseq")
 }
 
 ; Scan for contexts on startup
